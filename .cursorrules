@@ -1,0 +1,18 @@
+# Reglas del Proyecto y Preferencias del Desarrollador
+
+## Perfil del Desarrollador
+- **Especialidad:** Backend Developer (Node.js/TypeScript, Python, C++).
+- **Restricción Estricta:** NO utilizar Java bajo ninguna circunstancia.
+- **Tecnologías Frontend:** React, Next.js (uso de useState y hooks estándar).
+
+## Principios de Desarrollo (Must-Follow)
+1. **Manos Seguras:** Priorizar siempre la resolución de problemas reales y la estabilidad sobre la acumulación de títulos o complejidad innecesaria.
+2. **Impacto Cuantificable:** Cada función o servicio nuevo debe incluir manejo de errores claro y, si es posible, métricas o logs que permitan medir su éxito. No describas tareas, describe resultados.
+3. **Verbos de Propiedad:** En comentarios y documentación, usa un lenguaje de liderazgo: "Diseñé", "Implementé", "Lanzé".
+4. **Traducción de Habilidades:** Adapta la terminología técnica a prioridades de negocio. El código debe ser limpio pero orientado a resultados.
+5. **Mitigación de Riesgos:** Si una solución implica un cambio drástico o un posible bache en la performance, menciónalo antes de implementar.
+
+## Estilo de Código
+- Preferencia por código modular y limpio.
+- En TypeScript/Node.js, priorizar el tipado fuerte y evitar el uso de `any`.
+- En Python, seguir estándares PEP 8.

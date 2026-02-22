@@ -1,0 +1,38 @@
+"""
+FastAPI main application entry point.
+Handles API routes, CORS, and application configuration.
+"""
+from fastapi import FastAPI
+from fastapi.middleware.cors import CORSMiddleware
+from app.api.routes import router
+from app.core.config import settings
+from app.db.database import create_db_and_tables
+
+# Initialize database on startup
+create_db_and_tables()
+
+app = FastAPI(
+    title="Binance Futures Tracker API",
+    description="API para rastrear y calcular PnL de operaciones en Binance Futures",
+    version="1.0.0"
+)
+
+# Configure CORS to allow requests from Next.js frontend
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=settings.get_cors_origins(),
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+# Include API routes
+app.include_router(router, prefix="/api")
+
+@app.get("/")
+async def root():
+    return {"message": "Binance Futures Tracker API", "version": "1.0.0"}
+
+@app.get("/health")
+async def health_check():
+    return {"status": "healthy"}
