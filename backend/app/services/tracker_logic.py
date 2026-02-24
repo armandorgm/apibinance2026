@@ -7,6 +7,7 @@ from datetime import datetime
 from app.db.database import Fill, Trade, get_session_direct
 from sqlmodel import select
 from collections import deque
+from typing import Optional
 
 
 class FIFOTracker:
@@ -201,3 +202,77 @@ class FIFOTracker:
             
             session.commit()
             return new_trades_count
+
+    def compute_open_positions(self) -> List[Dict[str, Any]]:
+        """Compute open (unmatched) positions for the current symbol.
+
+        Returns a list of dicts with remaining entry fills (side, price, amount, fee, timestamp, datetime).
+        """
+        with get_session_direct() as session:
+            statement = select(Fill).where(Fill.symbol == self.symbol).order_by(Fill.timestamp)
+            fills = session.exec(statement).all()
+
+        buy_queue = deque()
+        sell_queue = deque()
+
+        # Work on shallow copies to avoid mutating DB objects
+        class _FillCopy:
+            def __init__(self, f: Fill):
+                self.side = f.side
+                self.price = f.price
+                self.amount = float(f.amount)
+                self.fee = float(f.fee or 0.0)
+                self.timestamp = f.timestamp
+                self.datetime = f.datetime
+
+        for f in fills:
+            fc = _FillCopy(f)
+            if fc.side == 'buy':
+                buy_queue.append(fc)
+            else:
+                sell_queue.append(fc)
+
+            # match as we go
+            while buy_queue and sell_queue:
+                buy = buy_queue[0]
+                sell = sell_queue[0]
+
+                if buy.timestamp <= sell.timestamp:
+                    entry = buy
+                    exit = sell
+                else:
+                    entry = sell
+                    exit = buy
+
+                trade_amount = min(entry.amount, exit.amount)
+
+                # reduce amounts
+                entry.amount -= trade_amount
+                exit.amount -= trade_amount
+
+                if entry.amount <= 0.00000001:
+                    if entry is buy:
+                        buy_queue.popleft()
+                    else:
+                        sell_queue.popleft()
+                if exit.amount <= 0.00000001:
+                    if exit is sell:
+                        sell_queue.popleft()
+                    else:
+                        buy_queue.popleft()
+
+        # collect remaining open positions
+        open_positions: List[Dict[str, Any]] = []
+        for q in (buy_queue, sell_queue):
+            for remaining in q:
+                open_positions.append({
+                    'symbol': self.symbol,
+                    'entry_side': remaining.side,
+                    'entry_price': remaining.price,
+                    'entry_amount': remaining.amount,
+                    'entry_fee': remaining.fee,
+                    'entry_timestamp': remaining.timestamp,
+                    'entry_datetime': remaining.datetime,
+                })
+
+        return open_positions

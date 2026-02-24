@@ -2,7 +2,7 @@
 API routes for the Binance Futures Tracker.
 """
 from fastapi import APIRouter, HTTPException, Depends
-from typing import List, Dict, Any
+from typing import List, Dict, Any, Optional
 from datetime import datetime
 from app.services.tracker_logic import FIFOTracker
 from app.core.exchange import exchange_manager
@@ -31,11 +31,11 @@ class TradeResponse(BaseModel):
     entry_amount: float
     entry_fee: float
     entry_datetime: datetime
-    exit_side: str
-    exit_price: float
-    exit_amount: float
-    exit_fee: float
-    exit_datetime: datetime
+    exit_side: Optional[str]
+    exit_price: Optional[float]
+    exit_amount: Optional[float]
+    exit_fee: Optional[float]
+    exit_datetime: Optional[datetime]
     pnl_net: float
     pnl_percentage: float
     duration_seconds: int
@@ -61,8 +61,64 @@ async def get_trade_history(symbol: str = "BTC/USDT"):
                 .order_by(Trade.entry_datetime.desc())
             )
             trades = session.exec(statement).all()
-            
-            return [TradeResponse(**trade.model_dump()) for trade in trades]
+
+            # Build closed trades from DB
+            closed = [TradeResponse(**trade.model_dump()) for trade in trades]
+
+        # Compute open positions and unrealized PnL
+        try:
+            tracker = FIFOTracker(symbol)
+            open_positions = tracker.compute_open_positions()
+        except Exception:
+            open_positions = []
+
+        unrealized = []
+        if open_positions:
+            try:
+                ticker = await exchange_manager.fetch_ticker(symbol)
+                current_price = float(ticker.get('last') or ticker.get('close') or 0)
+            except Exception:
+                current_price = 0.0
+
+            for op in open_positions:
+                entry_side = op['entry_side']
+                entry_price = float(op['entry_price'])
+                entry_amount = float(op['entry_amount'])
+                entry_fee = float(op.get('entry_fee') or 0.0)
+
+                net_pnl, pnl_percentage = FIFOTracker(symbol).calculate_pnl(
+                    entry_price=entry_price,
+                    entry_amount=entry_amount,
+                    entry_fee=entry_fee,
+                    exit_price=current_price,
+                    exit_amount=entry_amount,
+                    exit_fee=0.0,
+                    entry_side=entry_side
+                )
+
+                unrealized.append(TradeResponse(
+                    id=0,
+                    symbol=symbol,
+                    entry_side=entry_side,
+                    entry_price=entry_price,
+                    entry_amount=entry_amount,
+                    entry_fee=entry_fee,
+                    entry_datetime=op['entry_datetime'],
+                    # Use empty string instead of null to avoid frontend `.toUpperCase()` errors
+                    exit_side='',
+                    # show current market price as provisional exit price for UI
+                    exit_price=current_price if current_price else None,
+                    exit_amount=None,
+                    exit_fee=None,
+                    exit_datetime=None,
+                    pnl_net=net_pnl,
+                    pnl_percentage=pnl_percentage,
+                    duration_seconds=0,
+                    created_at=op['entry_datetime']
+                ))
+
+        # Return closed trades first, then open/unrealized positions
+        return closed + unrealized
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Error fetching trade history: {str(e)}")
 
