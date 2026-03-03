@@ -6,7 +6,6 @@ import ccxt
 from typing import Optional, List, Dict, Any
 from app.core.config import settings
 import time
-from datetime import datetime
 
 
 class ExchangeManager:
@@ -35,7 +34,6 @@ class ExchangeManager:
                 'enableRateLimit': True,
                 'options': {
                     'defaultType': 'future',  # Use futures
-                    'adjustForTimeDifference': True,  # Auto-sync time with Binance
                 },
                 'sandbox': settings.TESTNET,
             })
@@ -68,11 +66,6 @@ class ExchangeManager:
         """
         self._rate_limit()
         exchange = self.get_exchange()
-        
-        since_readable = "None"
-        if since:
-            since_readable = f"{since} ({datetime.fromtimestamp(since / 1000).strftime('%Y-%m-%d %H:%M:%S')})"
-        print(f"--- [DEBUG] Fetching trades for {symbol} | Since: {since_readable} | Limit: {limit}")
         # #region agent log
         _log_path = r"c:\Users\arman\OneDrive\Documentos\Visual Studio 2022\apibinance2026\.cursor\debug.log"
         import json
@@ -91,15 +84,8 @@ class ExchangeManager:
         # #endregion
         try:
             trades = exchange.fetch_my_trades(symbol, since=since, limit=limit)
-            print(f"--- [DEBUG] Binance API returned {len(trades)} trades for {symbol}.")
-            if trades:
-                first_trade_dt = trades[0].get('datetime')
-                last_trade_dt = trades[-1].get('datetime')
-                print(f"--- [DEBUG]   -> First trade datetime: {first_trade_dt}")
-                print(f"--- [DEBUG]   -> Last trade datetime: {last_trade_dt}")
             return trades
         except Exception as e:
-            print(f"--- [DEBUG] ERROR fetching trades for {symbol}: {e}")
             # #region agent log
             try:
                 with open(_log_path, "a", encoding="utf-8") as _f:
