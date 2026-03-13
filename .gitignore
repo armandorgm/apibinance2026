@@ -12,6 +12,19 @@ frontend/.next/
 frontend/.env.local
 frontend/.env*.local
 
+# Entornos virtuales
+.venv/
+env/
+venv/
+
+# Python
+__pycache__/
+*.py[cod]
+
+# Variables de entorno (¡CRÍTICO para Binance API!)
+.env
+
+
 # IDE
 .vscode/
 .idea/
