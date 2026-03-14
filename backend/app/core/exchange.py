@@ -35,9 +35,25 @@ class ExchangeManager:
                 'enableRateLimit': True,
                 'options': {
                     'defaultType': 'future',  # Use futures
+                    'adjustForTimeDifference': True,  # Auto-sync time with Binance
                 },
                 'sandbox': settings.TESTNET,
             })
+            # Check time difference with server on initialization
+            try:
+                print("\n[Binance API] Checking time difference with server...")
+                server_time_ms = self.exchange.fetch_time()
+                local_time_ms = int(time.time() * 1000)
+                time_difference = server_time_ms - local_time_ms
+
+                print(f"  - Binance Server Time: {datetime.fromtimestamp(server_time_ms / 1000)}")
+                print(f"  - Local System Time:   {datetime.fromtimestamp(local_time_ms / 1000)}")
+                print(f"  - Difference:          {time_difference} ms")
+                if abs(time_difference) > 1000:
+                    print("  - WARNING: Time difference is greater than 1 second. System clock might need syncing.")
+                print("")
+            except Exception as e:
+                print(f"[Binance API] Could not check server time difference: {e}\n")
         return self.exchange
     
     def _rate_limit(self):
