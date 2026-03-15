@@ -34,26 +34,20 @@ class ExchangeManager:
                 'secret': api_secret,
                 'enableRateLimit': True,
                 'options': {
-                    'defaultType': 'future',  # Use futures
-                    'adjustForTimeDifference': True,  # Auto-sync time with Binance
+                    'defaultType': 'future',
+                    'adjustForTimeDifference': True,
                 },
                 'sandbox': settings.TESTNET,
             })
-            # Check time difference with server on initialization
+            # Force a time sync immediately upon initialization.
+            # This is a robust way to prevent "Timestamp ahead of server" errors
+            # by ensuring the app is in sync before making any real requests.
             try:
-                print("\n[Binance API] Checking time difference with server...")
-                server_time_ms = self.exchange.fetch_time()
-                local_time_ms = int(time.time() * 1000)
-                time_difference = server_time_ms - local_time_ms
-
-                print(f"  - Binance Server Time: {datetime.fromtimestamp(server_time_ms / 1000)}")
-                print(f"  - Local System Time:   {datetime.fromtimestamp(local_time_ms / 1000)}")
-                print(f"  - Difference:          {time_difference} ms")
-                if abs(time_difference) > 1000:
-                    print("  - WARNING: Time difference is greater than 1 second. System clock might need syncing.")
-                print("")
+                print("\n[Binance API] Forcing initial time synchronization...")
+                self.exchange.load_time_difference()
+                print("[Binance API] Time synchronized successfully.\n")
             except Exception as e:
-                print(f"[Binance API] Could not check server time difference: {e}\n")
+                print(f"[Binance API] Could not force time sync on init: {e}\n")
         return self.exchange
     
     def _rate_limit(self):
