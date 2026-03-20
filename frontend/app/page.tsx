@@ -5,12 +5,13 @@ import { TradeTable } from '@/components/trade-table'
 import { TradeChart } from '@/components/trade-chart'
 import { SyncButton } from '@/components/sync-button'
 import { StatsCard } from '@/components/stats-card'
-import { useTrades, useStats } from '@/hooks/use-trades'
+import { useTrades, useStats, useSyncHistoricalTrades } from '@/hooks/use-trades'
 
 export default function Home() {
   const [symbol, setSymbol] = useState('BTC/USDT')
   const { data: trades, isLoading, refetch } = useTrades(symbol)
   const { data: stats } = useStats(symbol)
+  const syncHistorical = useSyncHistoricalTrades()
 
   return (
     <main className="min-h-screen p-8 bg-gray-50 dark:bg-gray-900">
@@ -43,6 +44,25 @@ export default function Home() {
             </select>
           </div>
           <div className="flex-1" />
+          <button
+            onClick={() => syncHistorical.mutate({ symbol })}
+            disabled={syncHistorical.isPending}
+            className="flex items-center gap-2 px-4 py-2 bg-indigo-600 hover:bg-indigo-700 disabled:bg-indigo-400 text-white rounded-lg font-medium transition-colors shadow-sm"
+          >
+            {syncHistorical.isPending ? (
+              <>
+                <div className="w-4 h-4 border-2 border-white border-t-transparent rounded-full animate-spin" />
+                Cargando...
+              </>
+            ) : (
+              <>
+                <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z" />
+                </svg>
+                Cargar previos (7 días)
+              </>
+            )}
+          </button>
           <SyncButton symbol={symbol} onSyncComplete={() => refetch()} />
         </div>
 
