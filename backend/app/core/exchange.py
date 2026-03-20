@@ -62,7 +62,8 @@ class ExchangeManager:
         self, 
         symbol: str, 
         since: Optional[int] = None,
-        limit: int = 1000
+        limit: int = 1000,
+        params: Optional[Dict[str, Any]] = None
     ) -> List[Dict[str, Any]]:
         """
         Fetch user's trades from Binance Futures.
@@ -99,7 +100,7 @@ class ExchangeManager:
                 pass
         # #endregion
         try:
-            trades = exchange.fetch_my_trades(symbol, since=since, limit=limit)
+            trades = exchange.fetch_my_trades(symbol, since=since, limit=limit, params=params or {})
             print(f"--- [DEBUG] Binance API returned {len(trades)} trades for {symbol}.")
             if trades:
                 first_trade_dt = trades[0].get('datetime')

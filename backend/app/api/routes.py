@@ -225,6 +225,106 @@ async def sync_trades(symbol: str = "BTC/USDT"):
         raise HTTPException(status_code=500, detail=f"Error syncing trades: {str(e)}")
 
 
+@router.post("/sync/historical", response_model=SyncResponse)
+async def sync_historical_trades(symbol: str = "BTC/USDT"):
+    """
+    Sync historical trades from Binance.
+    Fetches up to 7 days of trades predating the oldest trade in the database.
+    """
+    try:
+        try:
+            symbol = exchange_manager.normalize_symbol(symbol)
+        except Exception:
+            pass
+            
+        create_db_and_tables()
+        fills_added = 0
+        trades_created = 0
+        
+        with get_session_direct() as session:
+            statement = (
+                select(Fill)
+                .where(Fill.symbol == symbol)
+                .order_by(Fill.timestamp.asc())
+                .limit(1)
+            )
+            oldest_fill = session.exec(statement).first()
+            
+            if oldest_fill:
+                end_time = oldest_fill.timestamp - 1
+            else:
+                import time
+                end_time = int(time.time() * 1000)
+                
+            # 7 days in milliseconds
+            seven_days_ms = 7 * 24 * 60 * 60 * 1000
+            start_time = end_time - seven_days_ms
+            
+        binance_trades = await exchange_manager.fetch_my_trades(
+            symbol, 
+            since=start_time,
+            params={"endTime": end_time}
+        )
+        
+        with get_session_direct() as session:
+            existing_trade_ids = set()
+            existing_statement = select(Fill.trade_id)
+            existing_ids = session.exec(existing_statement).all()
+            existing_trade_ids.update(existing_ids)
+            
+            for trade_data in binance_trades:
+                trade_id_str = str(trade_data['id'])
+                if trade_id_str not in existing_trade_ids:
+                    fee_cost = 0.0
+                    fee_currency = 'USDT'
+                    if isinstance(trade_data.get('fee'), dict):
+                        fee_cost = abs(trade_data['fee'].get('cost', 0))
+                        fee_currency = trade_data['fee'].get('currency', 'USDT')
+                    elif trade_data.get('fee'):
+                        fee_cost = abs(float(trade_data['fee']))
+                    
+                    try:
+                        normalized_fill_symbol = exchange_manager.normalize_symbol(trade_data.get('symbol') or symbol)
+                    except Exception:
+                        normalized_fill_symbol = trade_data.get('symbol') or symbol
+
+                    fill = Fill(
+                        trade_id=trade_id_str,
+                        symbol=normalized_fill_symbol,
+                        side=trade_data['side'],
+                        amount=abs(trade_data['amount']),
+                        price=trade_data['price'],
+                        cost=abs(trade_data.get('cost', trade_data['amount'] * trade_data['price'])),
+                        fee=fee_cost,
+                        fee_currency=fee_currency,
+                        timestamp=trade_data['timestamp'],
+                        datetime=datetime.fromtimestamp(trade_data['timestamp'] / 1000),
+                        order_id=str(trade_data.get('order', '')) if trade_data.get('order') else None
+                    )
+                    session.add(fill)
+                    fills_added += 1
+                    existing_trade_ids.add(trade_id_str)
+            
+            session.commit()
+        
+        tracker = FIFOTracker(symbol)
+        trades_created = tracker.process_and_save_trades()
+        
+        # Calculate start range date strings for message
+        start_date = datetime.fromtimestamp(start_time / 1000).strftime('%Y-%m-%d')
+        end_date = datetime.fromtimestamp(end_time / 1000).strftime('%Y-%m-%d')
+        
+        return SyncResponse(
+            success=True,
+            fills_added=fills_added,
+            trades_created=trades_created,
+            message=f"Historical sync ({start_date} to {end_date}) completed. Added {fills_added} fills, created {trades_created} trades."
+        )
+    
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error syncing historical trades: {str(e)}")
+
+
 @router.get("/symbols")
 async def get_symbols():
     """Get list of available symbols from database."""

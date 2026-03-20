@@ -62,6 +62,19 @@ export async function syncTrades(symbol: string): Promise<SyncResponse> {
   return response.json()
 }
 
+export async function syncHistoricalTrades(symbol: string): Promise<SyncResponse> {
+  const response = await fetch(`${API_BASE_URL}/api/sync/historical?symbol=${encodeURIComponent(symbol)}`, {
+    method: 'POST',
+  })
+  
+  if (!response.ok) {
+    const error = await response.json().catch(() => ({ detail: response.statusText }))
+    throw new Error(error.detail || `Error syncing historical trades: ${response.statusText}`)
+  }
+  
+  return response.json()
+}
+
 export async function fetchStats(symbol: string): Promise<Stats> {
   const response = await fetch(`${API_BASE_URL}/api/stats?symbol=${encodeURIComponent(symbol)}`)
   
