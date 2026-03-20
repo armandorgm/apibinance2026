@@ -1,3 +1,7 @@
+---
+trigger: always_on
+---
+
 # Estructura del Proyecto
 
 ## 📁 Estructura Completa
