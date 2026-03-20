@@ -317,7 +317,7 @@ async def sync_historical_trades(symbol: str = "BTC/USDT"):
             
             session.commit()
         
-        tracker = FIFOTracker(symbol)
+        tracker = TradeTracker(symbol)
         trades_created = tracker.process_and_save_trades()
         
         # Calculate start range date strings for message
