@@ -4,12 +4,11 @@ API routes for the Binance Futures Tracker.
 from fastapi import APIRouter, HTTPException, Depends
 from typing import List, Dict, Any, Optional
 from datetime import datetime
-from app.services.tracker_logic import FIFOTracker
+from app.services.tracker_logic import TradeTracker
 from app.core.exchange import exchange_manager
 from app.db.database import Fill, Trade, get_session_direct, create_db_and_tables
 from sqlmodel import select
 from pydantic import BaseModel
-
 
 router = APIRouter()
 
@@ -43,7 +42,7 @@ class TradeResponse(BaseModel):
 
 
 @router.get("/trades/history", response_model=List[TradeResponse])
-async def get_trade_history(symbol: str = "BTC/USDT"):
+async def get_trade_history(symbol: str = "BTC/USDT", logic: str = "fifo"):
     """
     Get processed trade history.
     Returns list of individual trades with PnL calculations.
@@ -54,21 +53,32 @@ async def get_trade_history(symbol: str = "BTC/USDT"):
             symbol = exchange_manager.normalize_symbol(symbol)
         except Exception:
             pass
-        with get_session_direct() as session:
-            statement = (
-                select(Trade)
-                .where(Trade.symbol == symbol)
-                .order_by(Trade.entry_datetime.desc())
-            )
-            trades = session.exec(statement).all()
+            
+        tracker = TradeTracker(symbol)
+            
+        if logic.lower() == "lifo":
+            with get_session_direct() as session:
+                statement = select(Fill).where(Fill.symbol == symbol).order_by(Fill.timestamp)
+                fills = session.exec(statement).all()
+            matched_trades = tracker.match_trades_lifo(fills)
+            # Re-order to match expected sorting (descending by entry_datetime usually, but here by exit/entry)
+            matched_trades.sort(key=lambda x: x['entry_timestamp'], reverse=True)
+            closed = [TradeResponse(**{**t, 'id': i, 'created_at': t['entry_datetime']}) for i, t in enumerate(matched_trades)]
+        else:
+            with get_session_direct() as session:
+                statement = (
+                    select(Trade)
+                    .where(Trade.symbol == symbol)
+                    .order_by(Trade.entry_datetime.desc())
+                )
+                trades = session.exec(statement).all()
 
             # Build closed trades from DB
             closed = [TradeResponse(**trade.model_dump()) for trade in trades]
 
         # Compute open positions and unrealized PnL
         try:
-            tracker = FIFOTracker(symbol)
-            open_positions = tracker.compute_open_positions()
+            open_positions = tracker.compute_open_positions(logic=logic)
         except Exception:
             open_positions = []
 
@@ -86,7 +96,7 @@ async def get_trade_history(symbol: str = "BTC/USDT"):
                 entry_amount = float(op['entry_amount'])
                 entry_fee = float(op.get('entry_fee') or 0.0)
 
-                net_pnl, pnl_percentage = FIFOTracker(symbol).calculate_pnl(
+                net_pnl, pnl_percentage = tracker.calculate_pnl(
                     entry_price=entry_price,
                     entry_amount=entry_amount,
                     entry_fee=entry_fee,
@@ -211,7 +221,7 @@ async def sync_trades(symbol: str = "BTC/USDT"):
             session.commit()
         
         # Process fills into matched trades
-        tracker = FIFOTracker(symbol)
+        tracker = TradeTracker(symbol)
         trades_created = tracker.process_and_save_trades()
         
         return SyncResponse(
@@ -343,7 +353,7 @@ async def get_symbols():
 
 
 @router.get("/stats")
-async def get_stats(symbol: str = "BTC/USDT"):
+async def get_stats(symbol: str = "BTC/USDT", logic: str = "fifo"):
     """Get trading statistics for a symbol."""
     try:
         # Normalize requested symbol
@@ -352,11 +362,14 @@ async def get_stats(symbol: str = "BTC/USDT"):
         except Exception:
             pass
 
-        with get_session_direct() as session:
-            statement = select(Trade).where(Trade.symbol == symbol)
-            trades = session.exec(statement).all()
+        if logic.lower() == "lifo":
+            tracker = TradeTracker(symbol)
+            with get_session_direct() as session:
+                statement = select(Fill).where(Fill.symbol == symbol).order_by(Fill.timestamp)
+                fills = session.exec(statement).all()
+            trades_data = tracker.match_trades_lifo(fills)
             
-            if not trades:
+            if not trades_data:
                 return {
                     "total_trades": 0,
                     "total_pnl": 0.0,
@@ -366,9 +379,46 @@ async def get_stats(symbol: str = "BTC/USDT"):
                     "average_pnl": 0.0
                 }
             
-            total_pnl = sum(t.pnl_net for t in trades)
-            winning_trades = sum(1 for t in trades if t.pnl_net > 0)
-            losing_trades = sum(1 for t in trades if t.pnl_net < 0)
+            total_pnl = sum(t['pnl_net'] for t in trades_data)
+            winning_trades = sum(1 for t in trades_data if t['pnl_net'] > 0)
+            losing_trades = sum(1 for t in trades_data if t['pnl_net'] < 0)
+            total_count = len(trades_data)
+            
+            return {
+                "total_trades": total_count,
+                "total_pnl": total_pnl,
+                "winning_trades": winning_trades,
+                "losing_trades": losing_trades,
+                "win_rate": (winning_trades / total_count * 100) if total_count else 0.0,
+                "average_pnl": total_pnl / total_count if total_count else 0.0
+            }
+        else:
+            with get_session_direct() as session:
+                statement = select(Trade).where(Trade.symbol == symbol)
+                trades = session.exec(statement).all()
+                
+                if not trades:
+                    return {
+                        "total_trades": 0,
+                        "total_pnl": 0.0,
+                        "winning_trades": 0,
+                        "losing_trades": 0,
+                        "win_rate": 0.0,
+                        "average_pnl": 0.0
+                    }
+                
+                total_pnl = sum(t.pnl_net for t in trades)
+                winning_trades = sum(1 for t in trades if t.pnl_net > 0)
+                losing_trades = sum(1 for t in trades if t.pnl_net < 0)
+                
+                return {
+                    "total_trades": len(trades),
+                    "total_pnl": total_pnl,
+                    "winning_trades": winning_trades,
+                    "losing_trades": losing_trades,
+                    "win_rate": (winning_trades / len(trades) * 100) if trades else 0.0,
+                    "average_pnl": total_pnl / len(trades) if trades else 0.0
+                }
             
             return {
                 "total_trades": len(trades),

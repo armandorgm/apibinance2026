@@ -39,8 +39,8 @@ export interface SyncResponse {
   message: string
 }
 
-export async function fetchTrades(symbol: string): Promise<Trade[]> {
-  const response = await fetch(`${API_BASE_URL}/api/trades/history?symbol=${encodeURIComponent(symbol)}`)
+export async function fetchTrades(symbol: string, logic: string = 'fifo'): Promise<Trade[]> {
+  const response = await fetch(`${API_BASE_URL}/api/trades/history?symbol=${encodeURIComponent(symbol)}&logic=${encodeURIComponent(logic)}`)
   
   if (!response.ok) {
     throw new Error(`Error fetching trades: ${response.statusText}`)
@@ -75,8 +75,8 @@ export async function syncHistoricalTrades(symbol: string): Promise<SyncResponse
   return response.json()
 }
 
-export async function fetchStats(symbol: string): Promise<Stats> {
-  const response = await fetch(`${API_BASE_URL}/api/stats?symbol=${encodeURIComponent(symbol)}`)
+export async function fetchStats(symbol: string, logic: string = 'fifo'): Promise<Stats> {
+  const response = await fetch(`${API_BASE_URL}/api/stats?symbol=${encodeURIComponent(symbol)}&logic=${encodeURIComponent(logic)}`)
   
   if (!response.ok) {
     throw new Error(`Error fetching stats: ${response.statusText}`)
