@@ -4,18 +4,18 @@
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { fetchTrades, syncTrades, syncHistoricalTrades, fetchStats, Trade, Stats, SyncResponse } from '@/lib/api'
 
-export function useTrades(symbol: string) {
+export function useTrades(symbol: string, logic: string = 'fifo') {
   return useQuery<Trade[]>({
-    queryKey: ['trades', symbol],
-    queryFn: () => fetchTrades(symbol),
+    queryKey: ['trades', symbol, logic],
+    queryFn: () => fetchTrades(symbol, logic),
     enabled: !!symbol,
   })
 }
 
-export function useStats(symbol: string) {
+export function useStats(symbol: string, logic: string = 'fifo', includeUnrealized: boolean = false) {
   return useQuery<Stats>({
-    queryKey: ['stats', symbol],
-    queryFn: () => fetchStats(symbol),
+    queryKey: ['stats', symbol, logic, includeUnrealized],
+    queryFn: () => fetchStats(symbol, logic, includeUnrealized),
     enabled: !!symbol,
   })
 }

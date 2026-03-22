@@ -12,15 +12,16 @@ export interface Trade {
   entry_amount: number
   entry_fee: number
   entry_datetime: string
-  exit_side: string
-  exit_price: number
-  exit_amount: number
-  exit_fee: number
-  exit_datetime: string
+  exit_side: string | null
+  exit_price: number | null
+  exit_amount: number | null
+  exit_fee: number | null
+  exit_datetime: string | null
   pnl_net: number
   pnl_percentage: number
   duration_seconds: number
   created_at: string
+  is_orphan?: boolean
 }
 
 export interface Stats {
@@ -30,6 +31,7 @@ export interface Stats {
   losing_trades: number
   win_rate: number
   average_pnl: number
+  unrealized_pnl: number
 }
 
 export interface SyncResponse {
@@ -39,8 +41,8 @@ export interface SyncResponse {
   message: string
 }
 
-export async function fetchTrades(symbol: string): Promise<Trade[]> {
-  const response = await fetch(`${API_BASE_URL}/api/trades/history?symbol=${encodeURIComponent(symbol)}`)
+export async function fetchTrades(symbol: string, logic: string = 'fifo'): Promise<Trade[]> {
+  const response = await fetch(`${API_BASE_URL}/api/trades/history?symbol=${encodeURIComponent(symbol)}&logic=${encodeURIComponent(logic)}`)
   
   if (!response.ok) {
     throw new Error(`Error fetching trades: ${response.statusText}`)
@@ -75,8 +77,8 @@ export async function syncHistoricalTrades(symbol: string): Promise<SyncResponse
   return response.json()
 }
 
-export async function fetchStats(symbol: string): Promise<Stats> {
-  const response = await fetch(`${API_BASE_URL}/api/stats?symbol=${encodeURIComponent(symbol)}`)
+export async function fetchStats(symbol: string, logic: string = 'fifo', includeUnrealized: boolean = false): Promise<Stats> {
+  const response = await fetch(`${API_BASE_URL}/api/stats?symbol=${encodeURIComponent(symbol)}&logic=${encodeURIComponent(logic)}&include_unrealized=${includeUnrealized}`)
   
   if (!response.ok) {
     throw new Error(`Error fetching stats: ${response.statusText}`)

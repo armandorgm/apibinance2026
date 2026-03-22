@@ -9,8 +9,10 @@ import { useTrades, useStats, useSyncHistoricalTrades } from '@/hooks/use-trades
 
 export default function Home() {
   const [symbol, setSymbol] = useState('BTC/USDT')
-  const { data: trades, isLoading, refetch } = useTrades(symbol)
-  const { data: stats } = useStats(symbol)
+  const [logic, setLogic] = useState('fifo')
+  const [includeUnrealized, setIncludeUnrealized] = useState(false)
+  const { data: trades, isLoading, refetch } = useTrades(symbol, logic)
+  const { data: stats } = useStats(symbol, logic, includeUnrealized)
   const syncHistorical = useSyncHistoricalTrades()
 
   return (
@@ -42,6 +44,32 @@ export default function Home() {
               <option value="BNB/USDT">BNB/USDT</option>
               <option value="1000PEPEUSDC">1000PEPEUSDC</option>
             </select>
+          </div>
+          <div>
+            <label htmlFor="logic" className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
+              Método
+            </label>
+            <select
+              id="logic"
+              value={logic}
+              onChange={(e) => setLogic(e.target.value)}
+              className="px-4 py-2 border border-gray-300 dark:border-gray-600 rounded-lg bg-white dark:bg-gray-800 text-gray-900 dark:text-white focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+            >
+              <option value="fifo">FIFO</option>
+              <option value="lifo">LIFO</option>
+            </select>
+          </div>
+          <div className="flex items-center gap-2 mt-6">
+            <input
+              type="checkbox"
+              id="unrealized"
+              checked={includeUnrealized}
+              onChange={(e) => setIncludeUnrealized(e.target.checked)}
+              className="w-4 h-4 text-indigo-600 border-gray-300 rounded focus:ring-indigo-500"
+            />
+            <label htmlFor="unrealized" className="text-sm font-medium text-gray-700 dark:text-gray-300">
+              Incluir PnL Flotante (Abiertas)
+            </label>
           </div>
           <div className="flex-1" />
           <button
