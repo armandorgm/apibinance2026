@@ -12,10 +12,10 @@ export function useTrades(symbol: string, logic: string = 'fifo') {
   })
 }
 
-export function useStats(symbol: string, logic: string = 'fifo') {
+export function useStats(symbol: string, logic: string = 'fifo', includeUnrealized: boolean = false) {
   return useQuery<Stats>({
-    queryKey: ['stats', symbol, logic],
-    queryFn: () => fetchStats(symbol, logic),
+    queryKey: ['stats', symbol, logic, includeUnrealized],
+    queryFn: () => fetchStats(symbol, logic, includeUnrealized),
     enabled: !!symbol,
   })
 }

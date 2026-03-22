@@ -1,7 +1,6 @@
 
 import asyncio
 from app.core.exchange import exchange_manager
-import os
 
 # This test will fail if the .env file is not configured with API keys.
 # We will assume it is for the purpose of this test.
@@ -19,7 +18,7 @@ async def main():
         # Use the global exchange_manager instance
         trades = await exchange_manager.fetch_my_trades(symbol=TEST_SYMBOL, limit=10)
         
-        print(f"--- [SUCCESS] fetch_my_trades executed successfully.")
+        print("--- [SUCCESS] fetch_my_trades executed successfully.")
         print(f"--- Found {len(trades)} trades for {TEST_SYMBOL}.")
         
         if trades:

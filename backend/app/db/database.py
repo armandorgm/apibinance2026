@@ -1,7 +1,7 @@
 """
 Database models and session management using SQLModel.
 """
-from sqlmodel import SQLModel, Session, create_engine, Field, select
+from sqlmodel import SQLModel, Session, create_engine, Field
 from typing import Optional
 from datetime import datetime
 from app.core.config import settings
