@@ -63,7 +63,10 @@ export function TradeTable({ trades }: TradeTableProps) {
           {trades.map((trade) => (
             <tr
               key={trade.id}
-              className="hover:bg-gray-50 dark:hover:bg-gray-700 transition-colors"
+              className={`hover:bg-gray-50 dark:hover:bg-gray-700 transition-colors ${
+                trade.is_orphan ? 'bg-orange-50 dark:bg-orange-900/20' : 
+                (!trade.exit_datetime ? 'bg-blue-50 dark:bg-blue-900/20' : '')
+              }`}
             >
               <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-900 dark:text-white">
                 <div className="flex flex-col">
@@ -74,12 +77,20 @@ export function TradeTable({ trades }: TradeTableProps) {
                 </div>
               </td>
               <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-900 dark:text-white">
-                <div className="flex flex-col">
-                  <span className="font-medium">{formatDate(trade.exit_datetime)}</span>
-                  <span className={`text-xs ${trade.exit_side === 'buy' ? 'text-green-600' : 'text-red-600'}`}>
-                    {trade.exit_side.toUpperCase()}
+                {trade.exit_datetime ? (
+                  <div className="flex flex-col">
+                    <span className="font-medium">{formatDate(trade.exit_datetime)}</span>
+                    {trade.exit_side && (
+                      <span className={`text-xs ${trade.exit_side === 'buy' ? 'text-green-600' : 'text-red-600'}`}>
+                        {trade.exit_side.toUpperCase()}
+                      </span>
+                    )}
+                  </div>
+                ) : (
+                  <span className="text-gray-500 italic">
+                    {trade.is_orphan ? 'Orphan (unmatched)' : 'Open (floating)'}
                   </span>
-                </div>
+                )}
               </td>
               <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-900 dark:text-white">
                 {trade.entry_amount.toFixed(6)}
@@ -88,10 +99,10 @@ export function TradeTable({ trades }: TradeTableProps) {
                 ${trade.entry_price.toFixed(2)}
               </td>
               <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-900 dark:text-white">
-                ${trade.exit_price.toFixed(2)}
+                {trade.exit_price ? `$${trade.exit_price.toFixed(2)}` : <span className="text-gray-500">—</span>}
               </td>
               <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500 dark:text-gray-400">
-                {formatDuration(trade.duration_seconds)}
+                {trade.duration_seconds > 0 ? formatDuration(trade.duration_seconds) : <span className="text-gray-500">—</span>}
               </td>
               <td className={`px-6 py-4 whitespace-nowrap text-sm font-semibold ${
                 trade.pnl_net >= 0 ? 'text-green-600' : 'text-red-600'
