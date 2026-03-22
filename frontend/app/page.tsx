@@ -6,6 +6,7 @@ import { TradeChart } from '@/components/trade-chart'
 import { SyncButton } from '@/components/sync-button'
 import { StatsCard } from '@/components/stats-card'
 import { useTrades, useStats, useSyncHistoricalTrades } from '@/hooks/use-trades'
+import { formatPrice } from '@/lib/utils'
 
 export default function Home() {
   const [symbol, setSymbol] = useState('BTC/USDT')
@@ -104,7 +105,7 @@ export default function Home() {
             />
             <StatsCard
               title="PnL Neto"
-              value={`$${stats.total_pnl.toFixed(2)}`}
+              value={formatPrice(stats.total_pnl)}
               valueColor={stats.total_pnl >= 0 ? 'text-green-600' : 'text-red-600'}
               icon="💰"
             />
@@ -115,7 +116,7 @@ export default function Home() {
             />
             <StatsCard
               title="PnL Promedio"
-              value={`$${stats.average_pnl.toFixed(2)}`}
+              value={formatPrice(stats.average_pnl)}
               valueColor={stats.average_pnl >= 0 ? 'text-green-600' : 'text-red-600'}
               icon="📈"
             />
