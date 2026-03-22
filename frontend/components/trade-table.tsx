@@ -2,6 +2,7 @@
 
 import { Trade } from '@/lib/api'
 import { format } from 'date-fns'
+import { formatPrice, formatAmount, formatPercentage } from '@/lib/utils'
 
 interface TradeTableProps {
   trades: Trade[]
@@ -93,13 +94,13 @@ export function TradeTable({ trades }: TradeTableProps) {
                 )}
               </td>
               <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-900 dark:text-white">
-                {trade.entry_amount.toFixed(6)}
+                {formatAmount(trade.entry_amount)}
               </td>
               <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-900 dark:text-white">
-                ${trade.entry_price.toFixed(2)}
+                {formatPrice(trade.entry_price)}
               </td>
               <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-900 dark:text-white">
-                {trade.exit_price ? `$${trade.exit_price.toFixed(2)}` : <span className="text-gray-500">—</span>}
+                {formatPrice(trade.exit_price)}
               </td>
               <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500 dark:text-gray-400">
                 {trade.duration_seconds > 0 ? formatDuration(trade.duration_seconds) : <span className="text-gray-500">—</span>}
@@ -107,12 +108,12 @@ export function TradeTable({ trades }: TradeTableProps) {
               <td className={`px-6 py-4 whitespace-nowrap text-sm font-semibold ${
                 trade.pnl_net >= 0 ? 'text-green-600' : 'text-red-600'
               }`}>
-                ${trade.pnl_net.toFixed(2)}
+                {formatPrice(trade.pnl_net)}
               </td>
               <td className={`px-6 py-4 whitespace-nowrap text-sm font-semibold ${
                 trade.pnl_percentage >= 0 ? 'text-green-600' : 'text-red-600'
               }`}>
-                {trade.pnl_percentage >= 0 ? '+' : ''}{trade.pnl_percentage.toFixed(2)}%
+                {formatPercentage(trade.pnl_percentage)}
               </td>
             </tr>
           ))}
