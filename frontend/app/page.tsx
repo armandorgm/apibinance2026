@@ -12,9 +12,31 @@ export default function Home() {
   const [symbol, setSymbol] = useState('BTC/USDT')
   const [logic, setLogic] = useState('fifo')
   const [includeUnrealized, setIncludeUnrealized] = useState(false)
+  const [lastHistoricalEndTime, setLastHistoricalEndTime] = useState<number | undefined>(undefined)
+  
   const { data: trades, isLoading, refetch } = useTrades(symbol, logic)
   const { data: stats } = useStats(symbol, logic, includeUnrealized)
   const syncHistorical = useSyncHistoricalTrades()
+
+  const handleSymbolChange = (newSymbol: string) => {
+    setSymbol(newSymbol)
+    setLastHistoricalEndTime(undefined)
+  }
+
+  const handleHistoricalSync = () => {
+    syncHistorical.mutate({ symbol, endTime: lastHistoricalEndTime }, {
+      onSuccess: (data) => {
+        if (data.start_time) {
+          setLastHistoricalEndTime(data.start_time - 1)
+        }
+        alert(`Sincronización histórica:\n${data.message}`)
+        refetch()
+      },
+      onError: (error) => {
+        alert(`Error en carga histórica: ${error.message}`)
+      }
+    })
+  }
 
   return (
     <main className="min-h-screen p-8 bg-gray-50 dark:bg-gray-900">
@@ -37,7 +59,7 @@ export default function Home() {
             <select
               id="symbol"
               value={symbol}
-              onChange={(e) => setSymbol(e.target.value)}
+              onChange={(e) => handleSymbolChange(e.target.value)}
               className="px-4 py-2 border border-gray-300 dark:border-gray-600 rounded-lg bg-white dark:bg-gray-800 text-gray-900 dark:text-white focus:ring-2 focus:ring-blue-500 focus:border-transparent"
             >
               <option value="BTC/USDT">BTC/USDT</option>
@@ -74,7 +96,7 @@ export default function Home() {
           </div>
           <div className="flex-1" />
           <button
-            onClick={() => syncHistorical.mutate({ symbol })}
+            onClick={handleHistoricalSync}
             disabled={syncHistorical.isPending}
             className="flex items-center gap-2 px-4 py-2 bg-indigo-600 hover:bg-indigo-700 disabled:bg-indigo-400 text-white rounded-lg font-medium transition-colors shadow-sm"
           >
@@ -88,12 +110,13 @@ export default function Home() {
                 <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                   <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z" />
                 </svg>
-                Cargar previos (7 días)
+                {lastHistoricalEndTime ? 'Continuar previos (7 días)' : 'Cargar previos (7 días)'}
               </>
             )}
           </button>
           <SyncButton symbol={symbol} onSyncComplete={() => refetch()} />
         </div>
+
 
         {/* Stats Cards */}
         {stats && (

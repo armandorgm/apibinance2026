@@ -19,6 +19,8 @@ class SyncResponse(BaseModel):
     fills_added: int
     trades_created: int
     message: str
+    start_time: Optional[int] = None
+    end_time: Optional[int] = None
 
 
 class TradeResponse(BaseModel):
@@ -236,10 +238,11 @@ async def sync_trades(symbol: str = "BTC/USDT"):
 
 
 @router.post("/sync/historical", response_model=SyncResponse)
-async def sync_historical_trades(symbol: str = "BTC/USDT"):
+async def sync_historical_trades(symbol: str = "BTC/USDT", end_time: Optional[int] = None):
     """
     Sync historical trades from Binance.
-    Fetches up to 7 days of trades predating the oldest trade in the database.
+    Fetches up to 7 days of trades predating the oldest trade in the database,
+    or predating the provided end_time (ms).
     """
     try:
         try:
@@ -252,20 +255,22 @@ async def sync_historical_trades(symbol: str = "BTC/USDT"):
         trades_created = 0
         
         with get_session_direct() as session:
-            statement = (
-                select(Fill)
-                .where(Fill.symbol == symbol)
-                .order_by(Fill.timestamp.asc())
-                .limit(1)
-            )
-            oldest_fill = session.exec(statement).first()
-            
-            if oldest_fill:
-                end_time = oldest_fill.timestamp - 1
-            else:
-                import time
-                end_time = int(time.time() * 1000)
+            # If end_time is not provided, look for the oldest fill in the database
+            if end_time is None:
+                statement = (
+                    select(Fill)
+                    .where(Fill.symbol == symbol)
+                    .order_by(Fill.timestamp.asc())
+                    .limit(1)
+                )
+                oldest_fill = session.exec(statement).first()
                 
+                if oldest_fill:
+                    end_time = oldest_fill.timestamp - 1
+                else:
+                    import time
+                    end_time = int(time.time() * 1000)
+            
             # 7 days in milliseconds
             seven_days_ms = 7 * 24 * 60 * 60 * 1000
             start_time = end_time - seven_days_ms
@@ -275,6 +280,7 @@ async def sync_historical_trades(symbol: str = "BTC/USDT"):
             since=start_time,
             params={"endTime": end_time}
         )
+
         
         with get_session_direct() as session:
             existing_trade_ids = set()
@@ -328,7 +334,9 @@ async def sync_historical_trades(symbol: str = "BTC/USDT"):
             success=True,
             fills_added=fills_added,
             trades_created=trades_created,
-            message=f"Historical sync ({start_date} to {end_date}) completed. Added {fills_added} fills, created {trades_created} trades."
+            message=f"Historical sync ({start_date} to {end_date}) completed. Added {fills_added} fills, created {trades_created} trades.",
+            start_time=start_time,
+            end_time=end_time
         )
     
     except Exception as e:

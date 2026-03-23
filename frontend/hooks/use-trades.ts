@@ -36,9 +36,10 @@ export function useSyncTrades() {
 export function useSyncHistoricalTrades() {
   const queryClient = useQueryClient()
 
-  return useMutation<SyncResponse, Error, { symbol: string }>({
-    mutationFn: ({ symbol }) => syncHistoricalTrades(symbol),
+  return useMutation<SyncResponse, Error, { symbol: string; endTime?: number }>({
+    mutationFn: ({ symbol, endTime }) => syncHistoricalTrades(symbol, endTime),
     onSuccess: (_, variables) => {
+
       // Invalidate and refetch trades and stats after sync
       queryClient.invalidateQueries({ queryKey: ['trades', variables.symbol] })
       queryClient.invalidateQueries({ queryKey: ['stats', variables.symbol] })
