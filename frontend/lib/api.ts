@@ -39,6 +39,8 @@ export interface SyncResponse {
   fills_added: number
   trades_created: number
   message: string
+  start_time?: number
+  end_time?: number
 }
 
 export async function fetchTrades(symbol: string, logic: string = 'fifo'): Promise<Trade[]> {
@@ -64,10 +66,17 @@ export async function syncTrades(symbol: string): Promise<SyncResponse> {
   return response.json()
 }
 
-export async function syncHistoricalTrades(symbol: string): Promise<SyncResponse> {
-  const response = await fetch(`${API_BASE_URL}/api/sync/historical?symbol=${encodeURIComponent(symbol)}`, {
+export async function syncHistoricalTrades(symbol: string, endTime?: number): Promise<SyncResponse> {
+  const url = new URL(`${API_BASE_URL}/api/sync/historical`)
+  url.searchParams.append('symbol', symbol)
+  if (endTime) {
+    url.searchParams.append('end_time', endTime.toString())
+  }
+
+  const response = await fetch(url.toString(), {
     method: 'POST',
   })
+
   
   if (!response.ok) {
     const error = await response.json().catch(() => ({ detail: response.statusText }))
