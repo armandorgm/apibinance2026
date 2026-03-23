@@ -53,8 +53,8 @@ export async function fetchTrades(symbol: string, logic: string = 'fifo'): Promi
   return response.json()
 }
 
-export async function syncTrades(symbol: string): Promise<SyncResponse> {
-  const response = await fetch(`${API_BASE_URL}/api/sync?symbol=${encodeURIComponent(symbol)}`, {
+export async function syncTrades(symbol: string, logic: string = 'atomic_fifo'): Promise<SyncResponse> {
+  const response = await fetch(`${API_BASE_URL}/api/sync?symbol=${encodeURIComponent(symbol)}&logic=${encodeURIComponent(logic)}`, {
     method: 'POST',
   })
   
@@ -66,9 +66,10 @@ export async function syncTrades(symbol: string): Promise<SyncResponse> {
   return response.json()
 }
 
-export async function syncHistoricalTrades(symbol: string, endTime?: number): Promise<SyncResponse> {
+export async function syncHistoricalTrades(symbol: string, logic: string = 'atomic_fifo', endTime?: number): Promise<SyncResponse> {
   const url = new URL(`${API_BASE_URL}/api/sync/historical`)
   url.searchParams.append('symbol', symbol)
+  url.searchParams.append('logic', logic)
   if (endTime) {
     url.searchParams.append('end_time', endTime.toString())
   }

@@ -57,13 +57,20 @@ async def get_trade_history(symbol: str = "BTC/USDT", logic: str = "fifo"):
             pass
             
         tracker = TradeTracker(symbol)
-            
-        if logic.lower() == "lifo":
+        
+        # Determine strategy from logic string
+        strategy = logic.lower()
+        if strategy not in ["fifo", "lifo", "atomic_fifo", "atomic_lifo"]:
+            # Fallback for UI if it sends "atomic"
+            strategy = "atomic_fifo" if strategy == "atomic" else "fifo"
+
+        if strategy in ["lifo", "atomic_lifo", "fifo"] and logic.lower() != "fifo":
+            # If not using stored FIFO trades, we re-run matching on the fly
             with get_session_direct() as session:
                 statement = select(Fill).where(Fill.symbol == symbol).order_by(Fill.timestamp)
                 fills = session.exec(statement).all()
-            matched_trades = tracker.match_trades_lifo(fills)
-            # Re-order to match expected sorting (descending by entry_datetime usually, but here by exit/entry)
+            matched_trades = tracker.match_trades(fills, strategy)
+            # Re-order to match expected sorting (descending by entry_datetime usually)
             matched_trades.sort(key=lambda x: x['entry_timestamp'], reverse=True)
             closed = [TradeResponse(**{**t, 'id': i, 'created_at': t['entry_datetime']}) for i, t in enumerate(matched_trades)]
         else:
@@ -136,7 +143,7 @@ async def get_trade_history(symbol: str = "BTC/USDT", logic: str = "fifo"):
 
 
 @router.post("/sync", response_model=SyncResponse)
-async def sync_trades(symbol: str = "BTC/USDT"):
+async def sync_trades(symbol: str = "BTC/USDT", logic: str = "atomic_fifo"):
     """
     Sync trades from Binance.
     Fetches new fills from Binance, saves them, and processes them into trades.
@@ -222,9 +229,9 @@ async def sync_trades(symbol: str = "BTC/USDT"):
             
             session.commit()
         
-        # Process fills into matched trades
+        # Process fills into matched trades using selected strategy
         tracker = TradeTracker(symbol)
-        trades_created = tracker.process_and_save_trades()
+        trades_created = tracker.process_and_save_trades(strategy_name=logic)
         
         return SyncResponse(
             success=True,
@@ -238,7 +245,7 @@ async def sync_trades(symbol: str = "BTC/USDT"):
 
 
 @router.post("/sync/historical", response_model=SyncResponse)
-async def sync_historical_trades(symbol: str = "BTC/USDT", end_time: Optional[int] = None):
+async def sync_historical_trades(symbol: str = "BTC/USDT", logic: str = "atomic_fifo", end_time: Optional[int] = None):
     """
     Sync historical trades from Binance.
     Fetches up to 7 days of trades predating the oldest trade in the database,
@@ -371,12 +378,16 @@ async def get_stats(symbol: str = "BTC/USDT", logic: str = "fifo", include_unrea
 
         tracker = TradeTracker(symbol)
         
-        # Base closed trades
-        if logic.lower() == "lifo":
+        # Match trades on the fly for stats if not standard FIFO
+        strategy = logic.lower()
+        if strategy not in ["fifo", "lifo", "atomic_fifo", "atomic_lifo"]:
+            strategy = "atomic_fifo" if strategy == "atomic" else "fifo"
+
+        if strategy != "fifo":
             with get_session_direct() as session:
                 statement = select(Fill).where(Fill.symbol == symbol).order_by(Fill.timestamp)
                 fills = session.exec(statement).all()
-            trades_data = tracker.match_trades_lifo(fills)
+            trades_data = tracker.match_trades(fills, strategy)
             total_pnl = sum(t['pnl_net'] for t in trades_data) if trades_data else 0.0
             winning_trades = sum(1 for t in trades_data if t['pnl_net'] > 0) if trades_data else 0
             losing_trades = sum(1 for t in trades_data if t['pnl_net'] < 0) if trades_data else 0

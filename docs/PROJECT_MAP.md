@@ -23,6 +23,6 @@ Rastreador de operaciones para Binance Futures con soporte para emparejamiento F
 3. **Formateo**: Precios brutos -> `lib/utils.ts` (`formatPrice`) -> UI.
 ## Responsabilidades de Módulos (Actualizado 2026-03-22)
 - `frontend/lib/utils.ts`: Gestiona el formateo dinámico de precios, cantidades y porcentajes para activos de cualquier valor nominal.
-- `backend/app/services/tracker_logic.py`: Implementa el algoritmo de matching exacto por cantidad y orden temporal.
+- `backend/app/services/tracker_logic.py`: Implementa el Patrón Strategy para soportar múltiples algoritmos de matching (FIFO, LIFO, ATOMIC) de forma modular (SOLID).
 - `backend/app/api/routes.py`: Implementa el endpoint de sincronización histórica secuencial que permite retroceder en el tiempo de forma manual o automática.
 - `frontend/app/page.tsx`: Orquesta la carga de datos históricos manteniendo el estado de búsqueda para evitar solapamientos y periodos vacíos.
