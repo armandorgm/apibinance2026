@@ -23,8 +23,8 @@ export function useStats(symbol: string, logic: string = 'fifo', includeUnrealiz
 export function useSyncTrades() {
   const queryClient = useQueryClient()
 
-  return useMutation<SyncResponse, Error, { symbol: string }>({
-    mutationFn: ({ symbol }) => syncTrades(symbol),
+  return useMutation<SyncResponse, Error, { symbol: string, logic: string }>({
+    mutationFn: ({ symbol, logic }) => syncTrades(symbol, logic),
     onSuccess: (_, variables) => {
       // Invalidate and refetch trades and stats after sync
       queryClient.invalidateQueries({ queryKey: ['trades', variables.symbol] })
@@ -36,8 +36,8 @@ export function useSyncTrades() {
 export function useSyncHistoricalTrades() {
   const queryClient = useQueryClient()
 
-  return useMutation<SyncResponse, Error, { symbol: string; endTime?: number }>({
-    mutationFn: ({ symbol, endTime }) => syncHistoricalTrades(symbol, endTime),
+  return useMutation<SyncResponse, Error, { symbol: string; logic: string; endTime?: number }>({
+    mutationFn: ({ symbol, logic, endTime }) => syncHistoricalTrades(symbol, logic, endTime),
     onSuccess: (_, variables) => {
 
       // Invalidate and refetch trades and stats after sync

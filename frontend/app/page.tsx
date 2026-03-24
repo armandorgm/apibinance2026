@@ -10,7 +10,7 @@ import { formatPrice } from '@/lib/utils'
 
 export default function Home() {
   const [symbol, setSymbol] = useState('BTC/USDT')
-  const [logic, setLogic] = useState('fifo')
+  const [logic, setLogic] = useState('atomic_fifo')
   const [includeUnrealized, setIncludeUnrealized] = useState(false)
   const [lastHistoricalEndTime, setLastHistoricalEndTime] = useState<number | undefined>(undefined)
   
@@ -24,7 +24,7 @@ export default function Home() {
   }
 
   const handleHistoricalSync = () => {
-    syncHistorical.mutate({ symbol, endTime: lastHistoricalEndTime }, {
+    syncHistorical.mutate({ symbol, logic, endTime: lastHistoricalEndTime }, {
       onSuccess: (data) => {
         if (data.start_time) {
           setLastHistoricalEndTime(data.start_time - 1)
@@ -78,8 +78,10 @@ export default function Home() {
               onChange={(e) => setLogic(e.target.value)}
               className="px-4 py-2 border border-gray-300 dark:border-gray-600 rounded-lg bg-white dark:bg-gray-800 text-gray-900 dark:text-white focus:ring-2 focus:ring-blue-500 focus:border-transparent"
             >
-              <option value="fifo">FIFO</option>
-              <option value="lifo">LIFO</option>
+              <option value="atomic_fifo">Atomic Match (FIFO)</option>
+              <option value="atomic_lifo">Atomic Match (LIFO)</option>
+              <option value="fifo">FIFO Puro (Parciales)</option>
+              <option value="lifo">LIFO Puro (Parciales)</option>
             </select>
           </div>
           <div className="flex items-center gap-2 mt-6">
@@ -114,7 +116,7 @@ export default function Home() {
               </>
             )}
           </button>
-          <SyncButton symbol={symbol} onSyncComplete={() => refetch()} />
+          <SyncButton symbol={symbol} logic={logic} onSyncComplete={() => refetch()} />
         </div>
 
 

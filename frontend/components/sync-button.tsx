@@ -5,17 +5,18 @@ import { useSyncTrades } from '@/hooks/use-trades'
 
 interface SyncButtonProps {
   symbol: string
+  logic: string
   onSyncComplete?: () => void
 }
 
-export function SyncButton({ symbol, onSyncComplete }: SyncButtonProps) {
+export function SyncButton({ symbol, logic, onSyncComplete }: SyncButtonProps) {
   const [isSyncing, setIsSyncing] = useState(false)
   const syncMutation = useSyncTrades()
 
   const handleSync = async () => {
     setIsSyncing(true)
     try {
-      const result = await syncMutation.mutateAsync({ symbol })
+      const result = await syncMutation.mutateAsync({ symbol, logic })
       alert(`Sincronización completada:\n${result.message}`)
       onSyncComplete?.()
     } catch (error) {
