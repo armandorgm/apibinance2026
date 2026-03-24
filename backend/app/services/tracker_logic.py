@@ -312,39 +312,37 @@ class TradeTracker:
             session.commit()
             return new_trades_count
 
-    def compute_open_positions(self, logic: str = "fifo", fills: List[Fill] = None) -> List[Dict[str, Any]]:
-        """Compute open (unmatched) positions for the current symbol using the given logic."""
+    def compute_open_positions(self, logic: str = "atomic_fifo", fills: List[Fill] = None) -> List[Dict[str, Any]]:
+        """
+        Compute open (unmatched) positions using the same strategy as the main matching.
+        Delegates to match_trades() to identify which orders were consumed, then
+        reports the leftover buys (open longs) and orphan sells (sells without a prior buy).
+        """
         if fills is None:
             with get_session_direct() as session:
                 statement = select(Fill).where(Fill.symbol == self.symbol).order_by(Fill.timestamp)
-                fills = session.exec(statement).all()
+                fills = list(session.exec(statement).all())
 
-        is_fifo = logic.lower() == "fifo"
-        
+        # Run the same strategy to find matched trades
+        matched_trades = self.match_trades(fills, logic)
+
+        # Collect the entry/exit timestamps that were consumed in matches
+        used_entry_timestamps = set()
+        used_exit_timestamps = set()
+        for t in matched_trades:
+            used_entry_timestamps.add(t['entry_timestamp'])
+            used_exit_timestamps.add(t['exit_timestamp'])
+
+        # Group fills into orders (same as matching does internally)
         grouped_orders = self._group_fills_by_order(fills)
         buys = [o for o in grouped_orders if o['side'] == 'buy']
         sells = [o for o in grouped_orders if o['side'] == 'sell']
-        
-        used_buys = set()
-        used_sells = set()
 
-        # Re-run matching logic just to identify which are unmatched
-        for s_idx, sell in enumerate(sells):
-            candidates = []
-            for b_idx, buy in enumerate(buys):
-                if b_idx in used_buys:
-                    continue
-                if buy['timestamp'] < sell['timestamp'] and abs(buy['amount'] - sell['amount']) < 1e-8:
-                    candidates.append(b_idx)
-            
-            if candidates:
-                chosen_idx = candidates[0] if is_fifo else candidates[-1]
-                used_buys.add(chosen_idx)
-                used_sells.add(s_idx)
-                    
         open_positions = []
-        for i, b in enumerate(buys):
-            if i not in used_buys:
+
+        # Unmatched buys → open long positions
+        for b in buys:
+            if b['timestamp'] not in used_entry_timestamps:
                 open_positions.append({
                     'symbol': self.symbol,
                     'entry_side': 'buy',
@@ -354,9 +352,10 @@ class TradeTracker:
                     'entry_timestamp': b['timestamp'],
                     'entry_datetime': b['datetime'],
                 })
-            
-        for i, s in enumerate(sells):
-            if i not in used_sells:
+
+        # Unmatched sells → orphan sells (closed before history or data gap)
+        for s in sells:
+            if s['timestamp'] not in used_exit_timestamps:
                 open_positions.append({
                     'symbol': self.symbol,
                     'entry_side': 'sell',
@@ -365,7 +364,7 @@ class TradeTracker:
                     'entry_fee': s['fee'],
                     'entry_timestamp': s['timestamp'],
                     'entry_datetime': s['datetime'],
-                    'is_orphan': True # Marker for UI
+                    'is_orphan': True,  # Marker for UI
                 })
 
         return open_positions

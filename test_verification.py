@@ -32,7 +32,7 @@ def test_exact_match_and_time_ordering():
     ]
     
     # 1. Test Matching
-    matched = tracker._match_trades(fills, is_fifo=True)
+    matched = tracker.match_trades(fills, strategy_name="fifo")
     
     print(f"Total matched trades: {len(matched)}")
     for i, m in enumerate(matched):

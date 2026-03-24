@@ -64,13 +64,14 @@ async def get_trade_history(symbol: str = "BTC/USDT", logic: str = "fifo"):
             # Fallback for UI if it sends "atomic"
             strategy = "atomic_fifo" if strategy == "atomic" else "fifo"
 
-        if strategy in ["lifo", "atomic_lifo", "fifo"] and logic.lower() != "fifo":
-            # If not using stored FIFO trades, we re-run matching on the fly
+        # Only atomic_fifo reads from DB (pre-saved trades).
+        # Everything else (fifo, lifo, atomic_lifo) is calculated live from fills
+        # so the correct strategy is always applied without DB interference.
+        if strategy != "atomic_fifo":
             with get_session_direct() as session:
                 statement = select(Fill).where(Fill.symbol == symbol).order_by(Fill.timestamp)
                 fills = session.exec(statement).all()
             matched_trades = tracker.match_trades(fills, strategy)
-            # Re-order to match expected sorting (descending by entry_datetime usually)
             matched_trades.sort(key=lambda x: x['entry_timestamp'], reverse=True)
             closed = [TradeResponse(**{**t, 'id': i, 'created_at': t['entry_datetime']}) for i, t in enumerate(matched_trades)]
         else:
@@ -331,7 +332,8 @@ async def sync_historical_trades(symbol: str = "BTC/USDT", logic: str = "atomic_
             session.commit()
         
         tracker = TradeTracker(symbol)
-        trades_created = tracker.process_and_save_trades()
+        # Bug fix: pass the selected strategy so historical sync respects it
+        trades_created = tracker.process_and_save_trades(strategy_name=logic)
         
         # Calculate start range date strings for message
         start_date = datetime.fromtimestamp(start_time / 1000).strftime('%Y-%m-%d')

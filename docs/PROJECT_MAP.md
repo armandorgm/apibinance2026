@@ -21,8 +21,9 @@ Rastreador de operaciones para Binance Futures con soporte para emparejamiento F
 1. **Sincronización**: Binance API -> `exchange.py` -> `fills` table -> `tracker_logic.py` -> `trades` table.
 2. **Visualización**: `routes.py` -> `api.ts` -> React Query -> `trade-table.tsx` / `trade-chart.tsx`.
 3. **Formateo**: Precios brutos -> `lib/utils.ts` (`formatPrice`) -> UI.
-## Responsabilidades de Módulos (Actualizado 2026-03-22)
+## Responsabilidades de Módulos (Actualizado 2026-03-24)
 - `frontend/lib/utils.ts`: Gestiona el formateo dinámico de precios, cantidades y porcentajes para activos de cualquier valor nominal.
-- `backend/app/services/tracker_logic.py`: Implementa el Patrón Strategy para soportar múltiples algoritmos de matching (FIFO, LIFO, ATOMIC) de forma modular (SOLID).
-- `backend/app/api/routes.py`: Implementa el endpoint de sincronización histórica secuencial que permite retroceder en el tiempo de forma manual o automática.
+- `backend/app/services/tracker_logic.py`: Implementa el Patrón Strategy (FIFO, LIFO, ATOMIC). `compute_open_positions` delega ahora en `match_trades()` con la estrategia seleccionada, garantizando consistencia entre posiciones cerradas y flotantes.
+- `backend/app/api/routes.py`: FIFO/LIFO/Atomic se calculan siempre en vivo desde fills; solo `atomic_fifo` lee la DB pre-procesada. `sync/historical` respeta la estrategia seleccionada.
 - `frontend/app/page.tsx`: Orquesta la carga de datos históricos manteniendo el estado de búsqueda para evitar solapamientos y periodos vacíos.
+- `backend/tests/test_matching_strategies.py`: Suite pytest parametrizada con 16 casos cubriendo exact/partial/inverted match, orden FIFO vs LIFO, y posiciones abiertas por estrategia.
