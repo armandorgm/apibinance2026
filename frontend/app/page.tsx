@@ -5,6 +5,7 @@ import { TradeTable } from '@/components/trade-table'
 import { TradeChart } from '@/components/trade-chart'
 import { SyncButton } from '@/components/sync-button'
 import { StatsCard } from '@/components/stats-card'
+import { BotMonitor } from '@/components/bot-monitor'
 import { useTrades, useStats, useSyncHistoricalTrades } from '@/hooks/use-trades'
 import { formatPrice } from '@/lib/utils'
 
@@ -147,6 +148,9 @@ export default function Home() {
             />
           </div>
         )}
+
+        {/* Bot Autonomous Monitoring */}
+        <BotMonitor />
 
         {/* Chart */}
         {trades && trades.length > 0 && (

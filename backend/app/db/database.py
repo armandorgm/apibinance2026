@@ -57,6 +57,24 @@ class Trade(SQLModel, table=True):
     created_at: datetime = Field(default_factory=datetime.utcnow)
 
 
+class BotSignal(SQLModel, table=True):
+    """
+    Log of a strategy engine evaluation.
+    Tracks what rules were evaluated and if action was taken.
+    """
+    __tablename__ = "bot_signals"
+    
+    id: Optional[int] = Field(default=None, primary_key=True)
+    symbol: str = Field(index=True)
+    rule_triggered: Optional[str] = None
+    action_taken: Optional[str] = None # 'NEW_ORDER', 'UPDATE_RANGE', or None
+    params_snapshot: Optional[str] = None # JSON snapshot of parameters used
+    success: bool = True
+    error_message: Optional[str] = None
+    timestamp: int = Field(default_factory=lambda: int(datetime.utcnow().timestamp() * 1000))
+    created_at: datetime = Field(default_factory=datetime.utcnow)
+
+
 # Database engine
 engine = create_engine(
     settings.DATABASE_URL,

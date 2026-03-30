@@ -141,6 +141,53 @@ class ExchangeManager:
         except Exception as e:
             raise Exception(f"Error fetching ticker: {str(e)}")
 
+    async def create_order(
+        self,
+        symbol: str,
+        side: str,
+        amount: float,
+        price: Optional[float] = None,
+        order_type: str = 'market',
+        params: Optional[Dict[str, Any]] = None
+    ) -> Dict[str, Any]:
+        """
+        Create a new order on Binance Futures.
+        """
+        self._rate_limit()
+        exchange = self.get_exchange()
+        
+        try:
+            order = exchange.create_order(
+                symbol=symbol,
+                type=order_type,
+                side=side,
+                amount=amount,
+                price=price,
+                params=params or {}
+            )
+            print(f"--- [DEBUG] Order created: {order['id']} ({side} {amount} {symbol})")
+            return order
+        except Exception as e:
+            print(f"--- [DEBUG] ERROR creating order for {symbol}: {e}")
+            raise Exception(f"Error creating order on Binance: {str(e)}")
+
+    async def get_open_positions(self, symbol: Optional[str] = None) -> List[Dict[str, Any]]:
+        """
+        Fetch current open positions from Binance Futures.
+        """
+        self._rate_limit()
+        exchange = self.get_exchange()
+        
+        try:
+            # fetch_positions is used for futures to get current holdings
+            positions = exchange.fetch_positions(symbols=[symbol] if symbol else None)
+            # Filter for non-zero positions
+            open_positions = [p for p in positions if float(p.get('contracts', 0)) > 0 or float(p.get('notional', 0)) > 0]
+            return open_positions
+        except Exception as e:
+            print(f"--- [DEBUG] ERROR fetching positions: {e}")
+            raise Exception(f"Error fetching positions from Binance: {str(e)}")
+
     def normalize_symbol(self, symbol: str) -> str:
         """Normalize symbol to CCXT market format (e.g. 'BTCUSDT' -> 'BTC/USDT').
 

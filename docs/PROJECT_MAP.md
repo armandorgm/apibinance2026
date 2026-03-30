@@ -14,8 +14,11 @@ Rastreador de operaciones para Binance Futures con soporte para emparejamiento F
 - `backend/app/services/`: Lógica de negocio (`TrackerLogic`).
 - `frontend/app/`: Páginas y layouts de Next.js.
 - `frontend/components/`: Componentes UI reutilizables.
-- `frontend/lib/`: Utilidades y cliente API.
+- `frontend/lib/`: Utilidades, cliente API y motor de trading.
+  - `tradingStrategy.ts`: Definición de reglas funcionales (Array de evaluadores).
+  - `ruleEngine.ts`: Motor funcional de evaluación de estrategias.
 - `docs/incidents/`: Registro de incidentes y resoluciones.
+- `docs/MATCHING_SYSTEM.md`: Arquitectura detallada del sistema de emparejamiento (Strategy pattern, FIFO/LIFO/Atomic).
 
 ## Flujos Críticos de Datos
 1. **Sincronización**: Binance API -> `exchange.py` -> `fills` table -> `tracker_logic.py` -> `trades` table.
@@ -27,3 +30,4 @@ Rastreador de operaciones para Binance Futures con soporte para emparejamiento F
 - `backend/app/api/routes.py`: FIFO/LIFO/Atomic se calculan siempre en vivo desde fills; solo `atomic_fifo` lee la DB pre-procesada. `sync/historical` respeta la estrategia seleccionada.
 - `frontend/app/page.tsx`: Orquesta la carga de datos históricos manteniendo el estado de búsqueda para evitar solapamientos y periodos vacíos.
 - `backend/tests/test_matching_strategies.py`: Suite pytest parametrizada con 16 casos cubriendo exact/partial/inverted match, orden FIFO vs LIFO, y posiciones abiertas por estrategia.
+- `frontend/lib/ruleEngine.ts`: Motor de reglas desacoplado que evalúa el contexto de trading contra un array de funciones evaluadoras distribuidas en `tradingStrategy.ts`.

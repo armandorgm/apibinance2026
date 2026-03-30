@@ -43,6 +43,29 @@ export interface SyncResponse {
   end_time?: number
 }
 
+export interface BotSignal {
+  id: number
+  symbol: string
+  rule_triggered: string | null
+  action_taken: string | null
+  params_snapshot: string | null
+  success: boolean
+  error_message: string | null
+  timestamp: number
+  created_at: string
+}
+
+export interface BotStatus {
+  is_enabled: boolean
+  last_run: {
+    timestamp: string
+    symbol: string
+    rule_triggered: string | null
+    action: string | null
+    context: any
+  } | null
+}
+
 export async function fetchTrades(symbol: string, logic: string = 'fifo'): Promise<Trade[]> {
   const response = await fetch(`${API_BASE_URL}/api/trades/history?symbol=${encodeURIComponent(symbol)}&logic=${encodeURIComponent(logic)}`)
   
@@ -95,4 +118,28 @@ export async function fetchStats(symbol: string, logic: string = 'fifo', include
   }
   
   return response.json()
+}
+
+export async function fetchBotStatus(): Promise<BotStatus> {
+  const response = await fetch(`${API_BASE_URL}/api/bot/status`)
+  if (!response.ok) throw new Error('Error fetching bot status')
+  return response.json()
+}
+
+export async function fetchBotLogs(limit: number = 10): Promise<BotSignal[]> {
+  const response = await fetch(`${API_BASE_URL}/api/bot/logs?limit=${limit}`)
+  if (!response.ok) throw new Error('Error fetching bot logs')
+  return response.json()
+}
+
+export async function startBot(): Promise<any> {
+    const response = await fetch(`${API_BASE_URL}/api/bot/start`, { method: 'POST' })
+    if (!response.ok) throw new Error('Error starting bot')
+    return response.json()
+}
+
+export async function stopBot(): Promise<any> {
+    const response = await fetch(`${API_BASE_URL}/api/bot/stop`, { method: 'POST' })
+    if (!response.ok) throw new Error('Error stopping bot')
+    return response.json()
 }

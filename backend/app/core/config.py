@@ -22,6 +22,11 @@ class Settings(BaseSettings):
     EXCHANGE_NAME: str = "binance"
     TESTNET: bool = False
     
+    # Bot settings
+    BOT_ENABLED: bool = False
+    BOT_SYMBOL: str = "BTC/USDT"
+    BOT_INTERVAL: int = 60 # seconds
+    
     def get_cors_origins(self) -> List[str]:
         """
         Parse CORS_ORIGINS from comma-separated string.

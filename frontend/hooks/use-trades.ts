@@ -1,8 +1,12 @@
 /**
- * React Query hooks for fetching trades data.
+ * React Query hooks for fetching trades data and bot status.
  */
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
-import { fetchTrades, syncTrades, syncHistoricalTrades, fetchStats, Trade, Stats, SyncResponse } from '@/lib/api'
+import { 
+  fetchTrades, syncTrades, syncHistoricalTrades, fetchStats, 
+  fetchBotStatus, fetchBotLogs, startBot, stopBot,
+  Trade, Stats, SyncResponse, BotStatus, BotSignal 
+} from '@/lib/api'
 
 export function useTrades(symbol: string, logic: string = 'fifo') {
   return useQuery<Trade[]>({
@@ -26,7 +30,6 @@ export function useSyncTrades() {
   return useMutation<SyncResponse, Error, { symbol: string, logic: string }>({
     mutationFn: ({ symbol, logic }) => syncTrades(symbol, logic),
     onSuccess: (_, variables) => {
-      // Invalidate and refetch trades and stats after sync
       queryClient.invalidateQueries({ queryKey: ['trades', variables.symbol] })
       queryClient.invalidateQueries({ queryKey: ['stats', variables.symbol] })
     },
@@ -39,10 +42,40 @@ export function useSyncHistoricalTrades() {
   return useMutation<SyncResponse, Error, { symbol: string; logic: string; endTime?: number }>({
     mutationFn: ({ symbol, logic, endTime }) => syncHistoricalTrades(symbol, logic, endTime),
     onSuccess: (_, variables) => {
-
-      // Invalidate and refetch trades and stats after sync
       queryClient.invalidateQueries({ queryKey: ['trades', variables.symbol] })
       queryClient.invalidateQueries({ queryKey: ['stats', variables.symbol] })
     },
   })
+}
+
+export function useBotStatus() {
+  return useQuery<BotStatus>({
+    queryKey: ['bot-status'],
+    queryFn: () => fetchBotStatus(),
+    refetchInterval: 5000, // Refresh status every 5 seconds
+  })
+}
+
+export function useBotLogs(limit: number = 10) {
+  return useQuery<BotSignal[]>({
+    queryKey: ['bot-logs', limit],
+    queryFn: () => fetchBotLogs(limit),
+    refetchInterval: 5000, // Refresh logs every 5 seconds
+  })
+}
+
+export function useBotControl() {
+    const queryClient = useQueryClient()
+    
+    const start = useMutation({
+        mutationFn: startBot,
+        onSuccess: () => queryClient.invalidateQueries({ queryKey: ['bot-status'] })
+    })
+
+    const stop = useMutation({
+        mutationFn: stopBot,
+        onSuccess: () => queryClient.invalidateQueries({ queryKey: ['bot-status'] })
+    })
+
+    return { start, stop }
 }

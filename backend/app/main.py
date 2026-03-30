@@ -2,6 +2,7 @@
 FastAPI main application entry point.
 Handles API routes, CORS, and application configuration.
 """
+import asyncio
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from app.api.routes import router
@@ -28,6 +29,17 @@ app.add_middleware(
 
 # Include API routes
 app.include_router(router, prefix="/api")
+
+@app.on_event("startup")
+async def startup_event():
+    from app.services.bot_service import bot_instance
+    if settings.BOT_ENABLED:
+        asyncio.create_task(bot_instance.start())
+
+@app.on_event("shutdown")
+async def shutdown_event():
+    from app.services.bot_service import bot_instance
+    await bot_instance.stop()
 
 @app.get("/")
 async def root():

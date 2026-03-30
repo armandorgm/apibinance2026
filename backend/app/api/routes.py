@@ -6,7 +6,8 @@ from typing import List, Optional
 from datetime import datetime
 from app.services.tracker_logic import TradeTracker
 from app.core.exchange import exchange_manager
-from app.db.database import Fill, Trade, get_session_direct, create_db_and_tables
+from app.db.database import Fill, Trade, BotSignal, get_session_direct, create_db_and_tables
+from app.services.bot_service import bot_instance
 from sqlmodel import select
 from pydantic import BaseModel
 
@@ -445,3 +446,35 @@ async def get_stats(symbol: str = "BTC/USDT", logic: str = "fifo", include_unrea
             
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Error fetching stats: {str(e)}")
+
+
+@router.get("/bot/status")
+async def get_bot_status():
+    """Get the current running status and last evaluation of the bot."""
+    return {
+        "is_enabled": bot_instance.is_running,
+        "last_run": bot_instance.last_run_status
+    }
+
+
+@router.post("/bot/start")
+async def start_bot():
+    """Manually start the bot if not already running."""
+    await bot_instance.start()
+    return {"status": "started"}
+
+
+@router.post("/bot/stop")
+async def stop_bot():
+    """Manually stop the bot."""
+    await bot_instance.stop()
+    return {"status": "stopped"}
+
+
+@router.get("/bot/logs", response_model=List[BotSignal])
+async def get_bot_logs(limit: int = 20):
+    """Get the most recent bot evaluation signals/logs."""
+    with get_session_direct() as session:
+        statement = select(BotSignal).order_by(BotSignal.created_at.desc()).limit(limit)
+        results = session.exec(statement).all()
+        return list(results)
