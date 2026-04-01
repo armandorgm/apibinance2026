@@ -6,6 +6,7 @@ import { TradeChart } from '@/components/trade-chart'
 import { SyncButton } from '@/components/sync-button'
 import { StatsCard } from '@/components/stats-card'
 import { BotMonitor } from '@/components/bot-monitor'
+import { BalanceWidget } from '@/components/balance-widget'
 import { useTrades, useStats, useSyncHistoricalTrades } from '@/hooks/use-trades'
 import { formatPrice } from '@/lib/utils'
 
@@ -42,13 +43,21 @@ export default function Home() {
   return (
     <main className="min-h-screen p-8 bg-gray-50 dark:bg-gray-900">
       <div className="max-w-7xl mx-auto">
-        <div className="mb-8">
-          <h1 className="text-4xl font-bold text-gray-900 dark:text-white mb-2">
-            Binance Futures Tracker
-          </h1>
-          <p className="text-gray-600 dark:text-gray-400">
-            Rastrea y analiza tus operaciones en Binance Futures
-          </p>
+        <div className="mb-8 flex items-end justify-between">
+          <div>
+            <h1 className="text-4xl font-bold text-gray-900 dark:text-white mb-2">
+              Binance Futures Tracker
+            </h1>
+            <p className="text-gray-600 dark:text-gray-400">
+              Rastrea y analiza tus operaciones en Binance Futures
+            </p>
+          </div>
+          <a
+            href="/settings"
+            className="flex items-center gap-2 px-4 py-2 bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 hover:bg-gray-50 dark:hover:bg-gray-700/50 text-gray-700 dark:text-gray-300 rounded-xl font-bold transition-all shadow-sm active:scale-95"
+          >
+            ⚙️ Configurar Bot
+          </a>
         </div>
 
         {/* Controls */}
@@ -149,8 +158,15 @@ export default function Home() {
           </div>
         )}
 
-        {/* Bot Autonomous Monitoring */}
-        <BotMonitor />
+        {/* Bot Autonomous Monitoring and Balances */}
+        <div className="grid grid-cols-1 xl:grid-cols-3 gap-6 mb-8">
+          <div className="xl:col-span-1">
+            <BalanceWidget />
+          </div>
+          <div className="xl:col-span-2">
+            <BotMonitor />
+          </div>
+        </div>
 
         {/* Chart */}
         {trades && trades.length > 0 && (

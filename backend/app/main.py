@@ -32,9 +32,11 @@ app.include_router(router, prefix="/api")
 
 @app.on_event("startup")
 async def startup_event():
-    from app.services.bot_service import bot_instance
-    if settings.BOT_ENABLED:
-        asyncio.create_task(bot_instance.start())
+    # Bot is now decoupled and runs via bot_runner.py
+    # from app.services.bot_service import bot_instance
+    # if settings.BOT_ENABLED:
+    #     asyncio.create_task(bot_instance.start())
+    pass
 
 @app.on_event("shutdown")
 async def shutdown_event():

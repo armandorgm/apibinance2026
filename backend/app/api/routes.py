@@ -4,12 +4,12 @@ API routes for the Binance Futures Tracker.
 from fastapi import APIRouter, HTTPException
 from typing import List, Optional
 from datetime import datetime
+from app.services.bot_service import bot_instance
+from sqlmodel import select, Session
+from pydantic import BaseModel
+from app.db.database import Fill, Trade, BotSignal, BotConfig, get_session_direct, create_db_and_tables, engine
 from app.services.tracker_logic import TradeTracker
 from app.core.exchange import exchange_manager
-from app.db.database import Fill, Trade, BotSignal, get_session_direct, create_db_and_tables
-from app.services.bot_service import bot_instance
-from sqlmodel import select
-from pydantic import BaseModel
 
 router = APIRouter()
 
@@ -53,7 +53,7 @@ async def get_trade_history(symbol: str = "BTC/USDT", logic: str = "fifo"):
     try:
         # Normalize incoming symbol to exchange market format (e.g. BTCUSDT -> BTC/USDT)
         try:
-            symbol = exchange_manager.normalize_symbol(symbol)
+            symbol = await exchange_manager.normalize_symbol(symbol)
         except Exception:
             pass
             
@@ -163,7 +163,7 @@ async def sync_trades(symbol: str = "BTC/USDT", logic: str = "atomic_fifo"):
     try:
         # Normalize requested symbol before querying/syncing
         try:
-            symbol = exchange_manager.normalize_symbol(symbol)
+            symbol = await exchange_manager.normalize_symbol(symbol)
         except Exception:
             pass
         # Initialize database tables if they don't exist
@@ -208,7 +208,7 @@ async def sync_trades(symbol: str = "BTC/USDT", logic: str = "atomic_fifo"):
                     
                     # Normalize the symbol from the exchange (some exchanges return 'BTCUSDT')
                     try:
-                        normalized_fill_symbol = exchange_manager.normalize_symbol(trade_data.get('symbol') or symbol)
+                        normalized_fill_symbol = await exchange_manager.normalize_symbol(trade_data.get('symbol') or symbol)
                     except Exception:
                         normalized_fill_symbol = trade_data.get('symbol') or symbol
 
@@ -255,7 +255,7 @@ async def sync_historical_trades(symbol: str = "BTC/USDT", logic: str = "atomic_
     """
     try:
         try:
-            symbol = exchange_manager.normalize_symbol(symbol)
+            symbol = await exchange_manager.normalize_symbol(symbol)
         except Exception:
             pass
             
@@ -309,7 +309,7 @@ async def sync_historical_trades(symbol: str = "BTC/USDT", logic: str = "atomic_
                         fee_cost = abs(float(trade_data['fee']))
                     
                     try:
-                        normalized_fill_symbol = exchange_manager.normalize_symbol(trade_data.get('symbol') or symbol)
+                        normalized_fill_symbol = await exchange_manager.normalize_symbol(trade_data.get('symbol') or symbol)
                     except Exception:
                         normalized_fill_symbol = trade_data.get('symbol') or symbol
 
@@ -353,6 +353,33 @@ async def sync_historical_trades(symbol: str = "BTC/USDT", logic: str = "atomic_
         raise HTTPException(status_code=500, detail=f"Error syncing historical trades: {str(e)}")
 
 
+@router.get("/balances")
+async def get_balances():
+    """Get aggregated account balances (filtered > 0.1 USD)."""
+    try:
+        futures_balance = await exchange_manager.fetch_balance()
+        filtered_futures = {}
+        
+        for asset, amount in futures_balance.get('total', {}).items():
+            if isinstance(amount, (int, float)) and amount > 0:
+                # Basic filter rule: > 0.1 for USD stablecoins, > 0.0001 for altcoins
+                is_usd = 'USD' in asset
+                if (is_usd and amount >= 0.1) or (not is_usd and amount >= 0.0001):
+                    filtered_futures[asset] = {
+                        "free": futures_balance.get('free', {}).get(asset, 0),
+                        "used": futures_balance.get('used', {}).get(asset, 0),
+                        "total": amount
+                    }
+                    
+        return {
+            "spot": {}, # Spot requires a different CCXT instance; empty for now
+            "futures": filtered_futures,
+            "totals": {k: v['total'] for k, v in filtered_futures.items()}
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error fetching balances: {str(e)}")
+
+
 @router.get("/symbols")
 async def get_symbols():
     """Get list of available symbols from database."""
@@ -362,7 +389,9 @@ async def get_symbols():
             symbols = session.exec(statement).all()
             # Ensure returned symbols are normalized
             try:
-                normalized = [exchange_manager.normalize_symbol(s) for s in symbols]
+                normalized = []
+                for s in symbols:
+                    normalized.append(await exchange_manager.normalize_symbol(s))
             except Exception:
                 normalized = list(symbols)
             return {"symbols": normalized}
@@ -375,7 +404,7 @@ async def get_stats(symbol: str = "BTC/USDT", logic: str = "fifo", include_unrea
     """Get trading statistics for a symbol."""
     try:
         try:
-            symbol = exchange_manager.normalize_symbol(symbol)
+            symbol = await exchange_manager.normalize_symbol(symbol)
         except Exception:
             pass
 
@@ -478,3 +507,49 @@ async def get_bot_logs(limit: int = 20):
         statement = select(BotSignal).order_by(BotSignal.created_at.desc()).limit(limit)
         results = session.exec(statement).all()
         return list(results)
+
+
+@router.get("/bot/config")
+async def get_bot_config():
+    """Get the current dynamic bot configuration."""
+    with Session(engine) as session:
+        statement = select(BotConfig)
+        config = session.exec(statement).first()
+        return config
+
+
+class BotConfigUpdate(BaseModel):
+    symbol: Optional[str] = None
+    interval: Optional[int] = None
+    is_enabled: Optional[bool] = None
+    trade_amount: Optional[float] = None
+
+
+@router.post("/bot/config")
+async def update_bot_config(config_update: BotConfigUpdate):
+    """Update the bot configuration."""
+    # Protective check
+    if config_update.trade_amount is not None and config_update.trade_amount <= 0:
+        raise HTTPException(status_code=400, detail="El monto de trading debe ser mayor a 0.")
+        
+    with Session(engine) as session:
+        statement = select(BotConfig)
+        config = session.exec(statement).first()
+        if not config:
+            config = BotConfig()
+            session.add(config)
+        
+        if config_update.symbol is not None:
+            config.symbol = config_update.symbol
+        if config_update.interval is not None:
+            config.interval = config_update.interval
+        if config_update.is_enabled is not None:
+            config.is_enabled = config_update.is_enabled
+        if config_update.trade_amount is not None:
+            config.trade_amount = config_update.trade_amount
+        
+        config.updated_at = datetime.utcnow()
+        session.add(config)
+        session.commit()
+        session.refresh(config)
+        return config

@@ -1,0 +1,2 @@
+utilizar la habilidad @[subagent-driven-development] para despachar subtareas independientes a agentes especializados.
+genera un Plan de Implementación que asigne misiones separadas al Desarrollador y al Tester

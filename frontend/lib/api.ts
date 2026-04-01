@@ -49,10 +49,33 @@ export interface BotSignal {
   rule_triggered: string | null
   action_taken: string | null
   params_snapshot: string | null
+  exchange_request: string | null
+  exchange_response: string | null
   success: boolean
   error_message: string | null
   timestamp: number
   created_at: string
+}
+
+export interface BotConfig {
+  id: number
+  symbol: string
+  interval: number
+  is_enabled: boolean
+  trade_amount: number
+  updated_at: string
+}
+
+export interface WalletBalance {
+  free: number
+  used: number
+  total: number
+}
+
+export interface AggregatedBalances {
+  spot: Record<string, WalletBalance>
+  futures: Record<string, WalletBalance>
+  totals: Record<string, number>
 }
 
 export interface BotStatus {
@@ -142,4 +165,26 @@ export async function stopBot(): Promise<any> {
     const response = await fetch(`${API_BASE_URL}/api/bot/stop`, { method: 'POST' })
     if (!response.ok) throw new Error('Error stopping bot')
     return response.json()
+}
+
+export async function fetchBotConfig(): Promise<BotConfig> {
+  const response = await fetch(`${API_BASE_URL}/api/bot/config`)
+  if (!response.ok) throw new Error('Error fetching bot config')
+  return response.json()
+}
+
+export async function updateBotConfig(config: Partial<BotConfig>): Promise<BotConfig> {
+  const response = await fetch(`${API_BASE_URL}/api/bot/config`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(config),
+  })
+  if (!response.ok) throw new Error('Error updating bot config')
+  return response.json()
+}
+
+export async function fetchBalances(): Promise<AggregatedBalances> {
+  const response = await fetch(`${API_BASE_URL}/api/balances`)
+  if (!response.ok) throw new Error('Error fetching balances')
+  return response.json()
 }

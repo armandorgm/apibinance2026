@@ -1,24 +1,25 @@
 """
-Exchange connection management using CCXT.
+Exchange connection management using CCXT Async.
 Handles API keys, rate limits, and Binance Futures connection.
 """
-import ccxt
+import ccxt.async_support as ccxt
 from typing import Optional, List, Dict, Any
 from app.core.config import settings
+import asyncio
 import time
 from datetime import datetime
 
 
 class ExchangeManager:
-    """Manages connection to Binance Futures exchange via CCXT."""
+    """Manages connection to Binance Futures exchange via CCXT Async."""
     
     def __init__(self):
         self.exchange: Optional[ccxt.binance] = None
         self._last_request_time = 0
         self._min_request_interval = 0.1  # 100ms between requests (rate limit protection)
     
-    def get_exchange(self) -> ccxt.binance:
-        """Get or create exchange instance."""
+    async def get_exchange(self) -> ccxt.binance:
+        """Get or create exchange instance asynchronously."""
         if self.exchange is None:
             api_key = settings.BINANCE_API_KEY or ""
             api_secret = settings.BINANCE_API_SECRET or ""
@@ -40,22 +41,26 @@ class ExchangeManager:
                 'sandbox': settings.TESTNET,
             })
             # Force a time sync immediately upon initialization.
-            # This is a robust way to prevent "Timestamp ahead of server" errors
-            # by ensuring the app is in sync before making any real requests.
             try:
                 print("\n[Binance API] Forcing initial time synchronization...")
-                self.exchange.load_time_difference()
+                await self.exchange.load_time_difference()
                 print("[Binance API] Time synchronized successfully.\n")
             except Exception as e:
                 print(f"[Binance API] Could not force time sync on init: {e}\n")
         return self.exchange
     
-    def _rate_limit(self):
-        """Simple rate limiting to avoid hitting API limits."""
+    async def close(self):
+        """Close exchange connection."""
+        if self.exchange:
+            await self.exchange.close()
+            self.exchange = None
+
+    async def _rate_limit(self):
+        """Non-blocking rate limiting."""
         current_time = time.time()
         time_since_last = current_time - self._last_request_time
         if time_since_last < self._min_request_interval:
-            time.sleep(self._min_request_interval - time_since_last)
+            await asyncio.sleep(self._min_request_interval - time_since_last)
         self._last_request_time = time.time()
     
     async def fetch_my_trades(
@@ -65,81 +70,32 @@ class ExchangeManager:
         limit: int = 1000,
         params: Optional[Dict[str, Any]] = None
     ) -> List[Dict[str, Any]]:
-        """
-        Fetch user's trades from Binance Futures.
+        """Fetch user's trades from Binance Futures (Async)."""
+        await self._rate_limit()
+        exchange = await self.get_exchange()
         
-        Args:
-            symbol: Trading pair (e.g., 'BTC/USDT')
-            since: Timestamp in milliseconds (optional)
-            limit: Maximum number of trades to fetch
-            
-        Returns:
-            List of trade dictionaries
-        """
-        self._rate_limit()
-        exchange = self.get_exchange()
-        
-        since_readable = "None"
-        if since:
-            since_readable = f"{since} ({datetime.fromtimestamp(since / 1000).strftime('%Y-%m-%d %H:%M:%S')})"
+        since_readable = f"{since} ({datetime.fromtimestamp(since / 1000).strftime('%Y-%m-%d %H:%M:%S')})" if since else "None"
         print(f"--- [DEBUG] Fetching trades for {symbol} | Since: {since_readable} | Limit: {limit}")
-        # #region agent log
-        _log_path = r"c:\Users\arman\OneDrive\Documentos\Visual Studio 2022\apibinance2026\.cursor\debug.log"
-        import json
-        import time
+        
         try:
-            exchange.load_markets()
-            pepe_symbols = [m for m in (exchange.symbols or []) if "PEPE" in m.upper()]
-            with open(_log_path, "a", encoding="utf-8") as _f:
-                _f.write(json.dumps({"message": "fetch_my_trades before call", "data": {"symbol": symbol, "options": exchange.options, "pepe_symbols_in_markets": pepe_symbols[:30]}, "hypothesisId": "B,C,E", "location": "exchange.py:fetch_my_trades", "timestamp": int(time.time() * 1000)}) + "\n")
-        except Exception as _le:
-            try:
-                with open(_log_path, "a", encoding="utf-8") as _f:
-                    _f.write(json.dumps({"message": "load_markets or log failed", "data": {"symbol": symbol, "log_err": str(_le)}, "hypothesisId": "B", "location": "exchange.py:fetch_my_trades", "timestamp": int(time.time() * 1000)}) + "\n")
-            except Exception:
-                pass
-        # #endregion
-        try:
-            trades = exchange.fetch_my_trades(symbol, since=since, limit=limit, params=params or {})
+            trades = await exchange.fetch_my_trades(symbol, since=since, limit=limit, params=params or {})
             print(f"--- [DEBUG] Binance API returned {len(trades)} trades for {symbol}.")
-            if trades:
-                first_trade_dt = trades[0].get('datetime')
-                last_trade_dt = trades[-1].get('datetime')
-                print(f"--- [DEBUG]   -> First trade datetime: {first_trade_dt}")
-                print(f"--- [DEBUG]   -> Last trade datetime: {last_trade_dt}")
             return trades
         except Exception as e:
             print(f"--- [DEBUG] ERROR fetching trades for {symbol}: {e}")
-            # #region agent log
-            try:
-                with open(_log_path, "a", encoding="utf-8") as _f:
-                    _f.write(json.dumps({"message": "fetch_my_trades exception", "data": {"symbol": symbol, "error_type": type(e).__name__, "error_str": str(e)}, "hypothesisId": "A,C,D,E", "location": "exchange.py:fetch_my_trades", "timestamp": int(time.time() * 1000)}) + "\n")
-            except Exception:
-                pass
-            # #endregion
             raise Exception(f"Error fetching trades from Binance: {str(e)}")
     
     async def fetch_balance(self) -> Dict[str, Any]:
-        """Fetch account balance."""
-        self._rate_limit()
-        exchange = self.get_exchange()
-        
-        try:
-            balance = exchange.fetch_balance()
-            return balance
-        except Exception as e:
-            raise Exception(f"Error fetching balance: {str(e)}")
+        """Fetch account balance (Async)."""
+        await self._rate_limit()
+        exchange = await self.get_exchange()
+        return await exchange.fetch_balance()
     
     async def fetch_ticker(self, symbol: str) -> Dict[str, Any]:
-        """Fetch current ticker price."""
-        self._rate_limit()
-        exchange = self.get_exchange()
-        
-        try:
-            ticker = exchange.fetch_ticker(symbol)
-            return ticker
-        except Exception as e:
-            raise Exception(f"Error fetching ticker: {str(e)}")
+        """Fetch current ticker price (Async)."""
+        await self._rate_limit()
+        exchange = await self.get_exchange()
+        return await exchange.fetch_ticker(symbol)
 
     async def create_order(
         self,
@@ -150,14 +106,12 @@ class ExchangeManager:
         order_type: str = 'market',
         params: Optional[Dict[str, Any]] = None
     ) -> Dict[str, Any]:
-        """
-        Create a new order on Binance Futures.
-        """
-        self._rate_limit()
-        exchange = self.get_exchange()
+        """Create a new order on Binance Futures (Async)."""
+        await self._rate_limit()
+        exchange = await self.get_exchange()
         
         try:
-            order = exchange.create_order(
+            order = await exchange.create_order(
                 symbol=symbol,
                 type=order_type,
                 side=side,
@@ -172,45 +126,25 @@ class ExchangeManager:
             raise Exception(f"Error creating order on Binance: {str(e)}")
 
     async def get_open_positions(self, symbol: Optional[str] = None) -> List[Dict[str, Any]]:
-        """
-        Fetch current open positions from Binance Futures.
-        """
-        self._rate_limit()
-        exchange = self.get_exchange()
+        """Fetch current open positions from Binance Futures (Async)."""
+        await self._rate_limit()
+        exchange = await self.get_exchange()
         
+        positions = await exchange.fetch_positions(symbols=[symbol] if symbol else None)
+        return [p for p in positions if float(p.get('contracts', 0)) > 0 or float(p.get('notional', 0)) > 0]
+
+    async def normalize_symbol(self, symbol: str) -> str:
+        """Normalize symbol to CCXT market format (Async)."""
+        if '/' in symbol:
+            return symbol
         try:
-            # fetch_positions is used for futures to get current holdings
-            positions = exchange.fetch_positions(symbols=[symbol] if symbol else None)
-            # Filter for non-zero positions
-            open_positions = [p for p in positions if float(p.get('contracts', 0)) > 0 or float(p.get('notional', 0)) > 0]
-            return open_positions
-        except Exception as e:
-            print(f"--- [DEBUG] ERROR fetching positions: {e}")
-            raise Exception(f"Error fetching positions from Binance: {str(e)}")
-
-    def normalize_symbol(self, symbol: str) -> str:
-        """Normalize symbol to CCXT market format (e.g. 'BTCUSDT' -> 'BTC/USDT').
-
-        If the incoming symbol already contains a slash, it's returned as-is.
-        Otherwise we try to map the exchange market `id` to its `symbol`.
-        """
-        try:
-            if '/' in symbol:
-                return symbol
-            exchange = self.get_exchange()
-            # Ensure markets are loaded
-            try:
-                exchange.load_markets()
-            except Exception:
-                pass
-
+            exchange = await self.get_exchange()
+            await exchange.load_markets()
             for market in (exchange.markets or {}).values():
-                # market['id'] is exchange-specific id like 'BTCUSDT'
                 if market.get('id') == symbol or market.get('id') == symbol.upper():
                     return market.get('symbol', symbol)
         except Exception:
             pass
-
         return symbol
 
 

@@ -11,7 +11,7 @@ from sqlmodel import select, Session
 
 from app.core.config import settings
 from app.core.exchange import exchange_manager
-from app.db.database import engine, BotSignal, Fill, Trade
+from app.db.database import engine, BotSignal, Fill, Trade, BotConfig
 from app.services.strategy_engine import StrategyEngine, TradingContext, RuleActionResult
 
 
@@ -27,7 +27,7 @@ class TradingBot:
             return
         self.is_running = True
         self._task = asyncio.create_task(self._run_loop())
-        print(f"[BOT] Started for symbol {settings.BOT_SYMBOL}")
+        print(f"[BOT] Started")
 
     async def stop(self):
         self.is_running = False
@@ -47,10 +47,30 @@ class TradingBot:
                 print(f"[BOT] Error in loop: {e}")
                 traceback.print_exc()
             
-            await asyncio.sleep(settings.BOT_INTERVAL)
+            # Dynamic sleep based on config
+            with Session(engine) as session:
+                statement = select(BotConfig)
+                config = session.exec(statement).first()
+                sleep_time = config.interval if config else settings.BOT_INTERVAL
+                
+            await asyncio.sleep(sleep_time)
 
     async def evaluate_and_execute(self):
-        symbol = settings.BOT_SYMBOL
+        # 0. Get Config from DB
+        with Session(engine) as session:
+            statement = select(BotConfig)
+            config = session.exec(statement).first()
+            
+            if not config or not config.is_enabled:
+                # Bot is disabled in DB, skip execution
+                return
+
+            symbol = config.symbol
+            trade_amount = config.trade_amount
+            
+        # Normalize symbol (e.g. 1000PEPEUSDC -> PEPE/USDT:USDT)
+        symbol = await exchange_manager.normalize_symbol(symbol)
+            
         print(f"[BOT] Evaluating {symbol} at {datetime.utcnow()}")
         
         # 1. Gather Context
@@ -60,7 +80,7 @@ class TradingBot:
         result = self.engine.evaluate(context)
         
         # 3. Log Activity and Execute if needed
-        await self._process_result(symbol, result, context)
+        await self._process_result(symbol, trade_amount, result, context)
         
         self.last_run_status = {
             "timestamp": datetime.utcnow().isoformat(),
@@ -91,7 +111,7 @@ class TradingBot:
             last_range=last_range
         )
 
-    async def _process_result(self, symbol: str, result: RuleActionResult, context: TradingContext):
+    async def _process_result(self, symbol: str, trade_amount: float, result: RuleActionResult, context: TradingContext):
         if not result.trigger:
             return
 
@@ -99,24 +119,48 @@ class TradingBot:
         
         success = True
         error_msg = None
+        exchange_req = None
+        exchange_res = None
         
         try:
             if result.action == "NEW_ORDER":
-                # Execute a small market buy for demonstration
-                # WARNING: In production, specify real amounts/params
-                test_amount = 0.001 if "BTC" in symbol else 1.0
-                await exchange_manager.create_order(
+                # Execute market buy using the configured trade_amount
+                exchange_req = json.dumps({
+                    "symbol": symbol,
+                    "side": "buy",
+                    "amount": trade_amount,
+                    "order_type": "market"
+                })
+                
+                order_response = await exchange_manager.create_order(
                     symbol=symbol,
                     side="buy",
-                    amount=test_amount,
+                    amount=trade_amount,
                     order_type="market"
                 )
+                # Capture the response from the exchange
+                exchange_res = json.dumps(order_response)
             elif result.action == "UPDATE_RANGE":
                 # Logic for updating range (e.g. updating a DB setting or internal state)
                 print(f"[BOT] Updating range to {result.params.get('new_range')}")
         except Exception as e:
             success = False
+            # Better error capturing for CCXT/Binance exceptions
             error_msg = str(e)
+            
+            # Try to extract the JSON response from CCXT exceptions if present
+            if hasattr(e, 'response') and e.response:
+                try:
+                    exchange_res = json.dumps(e.response)
+                except:
+                    pass
+            elif hasattr(e, 'body') and e.body:
+                try:
+                    # Sometimes the body is a string that can be parsed as JSON
+                    exchange_res = e.body if isinstance(e.body, str) else json.dumps(e.body)
+                except:
+                    pass
+            
             print(f"[BOT] EXECUTION ERROR: {error_msg}")
 
         # Save to database
@@ -126,6 +170,8 @@ class TradingBot:
                 rule_triggered=result.rule_name,
                 action_taken=result.action,
                 params_snapshot=json.dumps(result.params) if result.params else None,
+                exchange_request=exchange_req,
+                exchange_response=exchange_res,
                 success=success,
                 error_message=error_msg
             )
