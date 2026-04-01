@@ -105,7 +105,7 @@ export default function SettingsPage() {
             {/* Trade Amount Config */}
             <div className="space-y-2">
               <label className="block text-sm font-semibold text-gray-700 dark:text-gray-200">
-                Monto de la Orden (Trade Amount)
+                Monto de Inversión (Notional USDC)
               </label>
               <input 
                 type="number"
@@ -116,7 +116,7 @@ export default function SettingsPage() {
                 className="w-full px-4 py-3 rounded-xl border border-gray-200 dark:border-gray-600 bg-white dark:bg-gray-900 text-gray-900 dark:text-white focus:ring-2 focus:ring-indigo-500 focus:border-transparent transition-all outline-none"
               />
               <p className="text-xs text-amber-500">
-                💡 En Binance Futures, el Notional Value (Precio × Monto) normalmente debe ser mayor a 5 USD. Ajustar para evitar el error "min notional".
+                💡 En Binance Futures, para evitar el error "min notional", este valor debe superar los 5 USD. El sistema calculará automáticamente la cantidad real de contratos dividiendo este monto por el precio en vivo. (Nota: tu apalancamiento actuará normalmente).
               </p>
             </div>
 

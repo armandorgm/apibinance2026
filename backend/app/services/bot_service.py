@@ -124,18 +124,40 @@ class TradingBot:
         
         try:
             if result.action == "NEW_ORDER":
-                # Execute market buy using the configured trade_amount
+                # Get actual market price
+                ticker = await exchange_manager.fetch_ticker(symbol)
+                last_price = float(ticker.get('last') or ticker.get('close') or 0)
+                if last_price <= 0:
+                    raise Exception(f"Invalid ticker price received: {last_price}")
+                    
+                # Calculate contracts needed for Notional USD
+                raw_contracts = trade_amount / last_price
+                
+                # Apply Binance Lot Size rules to avoid Precision Errors
+                exchange = await exchange_manager.get_exchange()
+                await exchange.load_markets()
+                
+                # Convert to precision format (string) and back to float
+                qty_str = exchange.amount_to_precision(symbol, raw_contracts)
+                target_contracts = float(qty_str)
+                
+                if target_contracts <= 0:
+                    raise Exception(f"Calculated contracts {target_contracts} is 0. Trade amount {trade_amount} too low.")
+
+                # Capture request for logging
                 exchange_req = json.dumps({
                     "symbol": symbol,
                     "side": "buy",
-                    "amount": trade_amount,
+                    "input_usd_notional": trade_amount,
+                    "market_price": last_price,
+                    "target_contracts": target_contracts,
                     "order_type": "market"
                 })
                 
                 order_response = await exchange_manager.create_order(
                     symbol=symbol,
                     side="buy",
-                    amount=trade_amount,
+                    amount=target_contracts,
                     order_type="market"
                 )
                 # Capture the response from the exchange

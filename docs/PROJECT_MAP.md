@@ -11,7 +11,7 @@ Rastreador de operaciones para Binance Futures con soporte para emparejamiento F
 - `backend/app/api/`: Endpoints REST.
 - `backend/app/core/`: Configuración y gestor de exchange.
 - `backend/app/db/`: Modelos de base de datos (`Fill`, `Trade`, `BotConfig`).
-- `backend/app/services/`: Lógica de negocio (`TrackerLogic`, `TradingBot`).
+- `backend/app/services/`: Lógica de negocio (`TrackerLogic`, `TradingBot`, `HistoryFormatter`).
 - `frontend/app/`: Páginas y layouts de Next.js.
 - `frontend/components/`: Componentes UI reutilizables.
 - `frontend/lib/`: Utilidades, cliente API y motor de trading.
@@ -27,10 +27,11 @@ Rastreador de operaciones para Binance Futures con soporte para emparejamiento F
 4. **Ejecución Autónoma**: `BotConfig` (DB) -> `BotService` (Background Task) -> CCXT -> Binance API -> `BotSignal` (DB).
 
 ## Responsabilidades de Módulos (Actualizado 2026-04-01)
+- `backend/app/services/history_formatter.py`: Abstrae el formateo y acomodo de resultados (Patrón Strategy) bajo los principios Open-Closed y SRP para ordenar la visualización combinada de trades cerradas y flotantes.
 - `frontend/lib/utils.ts`: Gestiona el formateo dinámico de precios, cantidades y porcentajes para activos de cualquier valor nominal.
-- `backend/app/services/tracker_logic.py`: Implementa el Patrón Strategy (FIFO, LIFO, ATOMIC).
+- `backend/app/services/tracker_logic.py`: Implementa el Patrón Strategy (FIFO, LIFO, ATOMIC) referenciado al cruce de trades puros.
 - `backend/app/api/routes.py`: Endpoints para sync de trades y gestión de balances. Incluye protección activa para asegurar configuraciones válidas (`trade_amount > 0`).
-- `frontend/app/page.tsx`: Orquesta del dashboard incluyendo `BalanceWidget` y `BotMonitor`.
-- `backend/app/services/bot_service.py`: Ahora consume el `trade_amount` explícito de la base de datos para ejecutar el volumen configurado por el usuario, sustituyendo montos hardcodeados por parametrización viva, evadiendo el error "min notional".
-- `frontend/app/settings/page.tsx`: Vista de control paramétrico estricto para el Bot Autónomo (símbolo, intervalo, monto, activación).
+- `frontend/app/page.tsx`: Orquesta del dashboard incluyendo `BalanceWidget`, `BotMonitor` y filtros dinámicos (como Query Params inyectados hacia useTrades).
+- `backend/app/services/bot_service.py`: Ejecuta órdenes transformando el monto inversión configuado (USD Notional) a cantidad exacta de contratos vía matemática (`Notional / Live Market Price`), pasando por el filtro de CCXT `amount_to_precision` para lograr compatibilidad estricta con Binance eliminando errores `-4164 MIN_NOTIONAL` y `-4111 PRECISION`.
+- `frontend/app/settings/page.tsx`: Vista de control paramétrico estricto para el Bot Autónomo. La UI aclara la lógica de apalancamiento vs input en notional.
 - `frontend/components/balance-widget.tsx`: Dashboard Balance View con pestañas e interfaz unificada. 

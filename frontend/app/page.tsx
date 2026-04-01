@@ -13,10 +13,11 @@ import { formatPrice } from '@/lib/utils'
 export default function Home() {
   const [symbol, setSymbol] = useState('BTC/USDT')
   const [logic, setLogic] = useState('atomic_fifo')
+  const [sortBy, setSortBy] = useState('recent')
   const [includeUnrealized, setIncludeUnrealized] = useState(false)
   const [lastHistoricalEndTime, setLastHistoricalEndTime] = useState<number | undefined>(undefined)
   
-  const { data: trades, isLoading, refetch } = useTrades(symbol, logic)
+  const { data: trades, isLoading, refetch } = useTrades(symbol, logic, sortBy)
   const { data: stats } = useStats(symbol, logic, includeUnrealized)
   const syncHistorical = useSyncHistoricalTrades()
 
@@ -92,6 +93,21 @@ export default function Home() {
               <option value="atomic_lifo">Atomic Match (LIFO)</option>
               <option value="fifo">FIFO Puro (Parciales)</option>
               <option value="lifo">LIFO Puro (Parciales)</option>
+            </select>
+          </div>
+          <div>
+            <label htmlFor="sortBy" className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
+              Ordenar por
+            </label>
+            <select
+              id="sortBy"
+              value={sortBy}
+              onChange={(e) => setSortBy(e.target.value)}
+              className="px-4 py-2 border border-gray-300 dark:border-gray-600 rounded-lg bg-white dark:bg-gray-800 text-gray-900 dark:text-white focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+            >
+              <option value="recent">Más recientes primero</option>
+              <option value="oldest">Más antiguas primero</option>
+              <option value="pnl_desc">Mayor PnL primero</option>
             </select>
           </div>
           <div className="flex items-center gap-2 mt-6">

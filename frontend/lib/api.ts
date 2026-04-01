@@ -89,8 +89,8 @@ export interface BotStatus {
   } | null
 }
 
-export async function fetchTrades(symbol: string, logic: string = 'fifo'): Promise<Trade[]> {
-  const response = await fetch(`${API_BASE_URL}/api/trades/history?symbol=${encodeURIComponent(symbol)}&logic=${encodeURIComponent(logic)}`)
+export async function fetchTrades(symbol: string, logic: string = 'fifo', sortBy: string = 'recent'): Promise<Trade[]> {
+  const response = await fetch(`${API_BASE_URL}/api/trades/history?symbol=${encodeURIComponent(symbol)}&logic=${encodeURIComponent(logic)}&sort_by=${encodeURIComponent(sortBy)}`)
   
   if (!response.ok) {
     throw new Error(`Error fetching trades: ${response.statusText}`)

@@ -10,6 +10,7 @@ from pydantic import BaseModel
 from app.db.database import Fill, Trade, BotSignal, BotConfig, get_session_direct, create_db_and_tables, engine
 from app.services.tracker_logic import TradeTracker
 from app.core.exchange import exchange_manager
+from app.services.history_formatter import TradeResponseFormatter, SortByEntryDateDesc, SortByEntryDateAsc, SortByPnLDesc
 
 router = APIRouter()
 
@@ -45,7 +46,7 @@ class TradeResponse(BaseModel):
 
 
 @router.get("/trades/history", response_model=List[TradeResponse])
-async def get_trade_history(symbol: str = "BTC/USDT", logic: str = "fifo"):
+async def get_trade_history(symbol: str = "BTC/USDT", logic: str = "fifo", sort_by: str = "recent"):
     """
     Get processed trade history.
     Returns list of individual trades with PnL calculations.
@@ -138,8 +139,16 @@ async def get_trade_history(symbol: str = "BTC/USDT", logic: str = "fifo"):
                     created_at=op['entry_datetime']
                 ))
 
-        # Return closed trades first, then open/unrealized positions
-        return closed + unrealized
+        # Return combined trades processed by the Strategy Pattern formatter
+        if sort_by == "oldest":
+            strategy = SortByEntryDateAsc()
+        elif sort_by == "pnl_desc":
+            strategy = SortByPnLDesc()
+        else:
+            strategy = SortByEntryDateDesc() # default to recent
+            
+        formatter = TradeResponseFormatter(sorter=strategy)
+        return formatter.format_and_sort(closed, unrealized)
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Error fetching trade history: {str(e)}")
 

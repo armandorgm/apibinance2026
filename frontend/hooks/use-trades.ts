@@ -8,10 +8,10 @@ import {
   Trade, Stats, SyncResponse, BotStatus, BotSignal, BotConfig, AggregatedBalances 
 } from '@/lib/api'
 
-export function useTrades(symbol: string, logic: string = 'fifo') {
+export function useTrades(symbol: string, logic: string = 'fifo', sortBy: string = 'recent') {
   return useQuery<Trade[]>({
-    queryKey: ['trades', symbol, logic],
-    queryFn: () => fetchTrades(symbol, logic),
+    queryKey: ['trades', symbol, logic, sortBy],
+    queryFn: () => fetchTrades(symbol, logic, sortBy),
     enabled: !!symbol,
   })
 }
