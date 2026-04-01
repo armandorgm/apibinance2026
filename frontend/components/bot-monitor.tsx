@@ -105,11 +105,61 @@ export function BotMonitor() {
                   <p className="text-xs text-gray-600 dark:text-gray-400 mt-0.5">
                     {log.action_taken ? `Acción: ${log.action_taken}` : 'Sin trigger (Hold)'}
                   </p>
+                  
+                  {/* Exchange Interaction JSON Details */}
+                  {log.action_taken === 'NEW_ORDER' && (log.exchange_request || log.exchange_response) && (
+                    <div className="mt-2 space-y-2">
+                       <details className="group">
+                          <summary className="text-[10px] font-bold text-indigo-600 dark:text-indigo-400 cursor-pointer hover:underline list-none flex items-center gap-1">
+                             <svg className="w-3 h-3 group-open:rotate-180 transition-transform" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                               <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
+                             </svg>
+                             Ver detalles JSON del Exchange
+                          </summary>
+                           <div className="mt-2 p-3 bg-gray-900 rounded-lg text-[10px] font-mono text-gray-300 overflow-x-auto border border-gray-700 custom-scrollbar">
+                             {!log.success && log.error_message && (
+                               <div className="mb-3 border-b border-rose-900/50 pb-3">
+                                 <p className="text-rose-400 mb-2 leading-none uppercase tracking-wider [font-size:9px] font-bold">Error (Execution Failure):</p>
+                                 <div className="p-2 bg-rose-950/30 border border-rose-900/40 rounded text-rose-300 whitespace-pre-wrap">
+                                    {log.error_message}
+                                 </div>
+                               </div>
+                             )}
+                             {log.exchange_request && (
+                               <div className="mb-3 border-b border-gray-800 pb-3">
+                                 <p className="text-pink-400 mb-2 leading-none uppercase tracking-wider [font-size:9px] font-bold">Request (Sent):</p>
+                                 <pre className="whitespace-pre">{(() => {
+                                    try {
+                                      return JSON.stringify(JSON.parse(log.exchange_request), null, 2);
+                                    } catch {
+                                      return log.exchange_request;
+                                    }
+                                 })()}</pre>
+                               </div>
+                             )}
+                             {log.exchange_response && (
+                               <div>
+                                 <p className="text-emerald-400 mb-2 leading-none uppercase tracking-wider [font-size:9px] font-bold">Response (Received):</p>
+                                 <pre className="whitespace-pre">{(() => {
+                                    try {
+                                      return JSON.stringify(JSON.parse(log.exchange_response), null, 2);
+                                    } catch {
+                                      return log.exchange_response;
+                                    }
+                                 })()}</pre>
+                               </div>
+                             )}
+                          </div>
+                       </details>
+                    </div>
+                  )}
                 </div>
                 {log.params_snapshot && (
-                   <span className="px-2 py-1 bg-indigo-50 dark:bg-indigo-900/20 text-indigo-600 dark:text-indigo-400 text-[10px] rounded-md font-mono">
-                      {log.params_snapshot.length > 20 ? 'params...' : log.params_snapshot}
-                   </span>
+                   <div className="flex flex-col items-end gap-1">
+                      <span className="px-2 py-1 bg-indigo-50 dark:bg-indigo-900/20 text-indigo-600 dark:text-indigo-400 text-[10px] rounded-md font-mono">
+                          {log.params_snapshot.length > 20 ? 'params' : log.params_snapshot}
+                      </span>
+                   </div>
                 )}
               </div>
             ))

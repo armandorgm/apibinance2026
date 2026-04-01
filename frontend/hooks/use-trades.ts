@@ -4,8 +4,8 @@
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { 
   fetchTrades, syncTrades, syncHistoricalTrades, fetchStats, 
-  fetchBotStatus, fetchBotLogs, startBot, stopBot,
-  Trade, Stats, SyncResponse, BotStatus, BotSignal 
+  fetchBotStatus, fetchBotLogs, startBot, stopBot, fetchBotConfig, updateBotConfig, fetchBalances,
+  Trade, Stats, SyncResponse, BotStatus, BotSignal, BotConfig, AggregatedBalances 
 } from '@/lib/api'
 
 export function useTrades(symbol: string, logic: string = 'fifo') {
@@ -78,4 +78,31 @@ export function useBotControl() {
     })
 
     return { start, stop }
+}
+
+export function useBotConfig() {
+  return useQuery<BotConfig>({
+    queryKey: ['bot-config'],
+    queryFn: () => fetchBotConfig(),
+  })
+}
+
+export function useUpdateBotConfig() {
+  const queryClient = useQueryClient()
+
+  return useMutation<BotConfig, Error, Partial<BotConfig>>({
+    mutationFn: (config) => updateBotConfig(config),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['bot-config'] })
+      queryClient.invalidateQueries({ queryKey: ['bot-status'] })
+    },
+  })
+}
+
+export function useBalances() {
+  return useQuery<AggregatedBalances>({
+    queryKey: ['balances'],
+    queryFn: () => fetchBalances(),
+    refetchInterval: 60000, // Refresh every 1 minute
+  })
 }
