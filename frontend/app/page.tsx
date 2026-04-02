@@ -9,6 +9,7 @@ import { BotMonitor } from '@/components/bot-monitor'
 import { BalanceWidget } from '@/components/balance-widget'
 import { useTrades, useStats, useSyncHistoricalTrades } from '@/hooks/use-trades'
 import { formatPrice } from '@/lib/utils'
+import Link from 'next/link'
 
 export default function Home() {
   const [symbol, setSymbol] = useState('BTC/USDT')
@@ -53,12 +54,23 @@ export default function Home() {
               Rastrea y analiza tus operaciones en Binance Futures
             </p>
           </div>
-          <a
-            href="/settings"
-            className="flex items-center gap-2 px-4 py-2 bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 hover:bg-gray-50 dark:hover:bg-gray-700/50 text-gray-700 dark:text-gray-300 rounded-xl font-bold transition-all shadow-sm active:scale-95"
-          >
-            ⚙️ Configurar Bot
-          </a>
+          <div className="flex gap-2">
+            <a
+              href="/orders"
+              className="flex items-center gap-2 px-4 py-2 bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 hover:bg-gray-50 dark:hover:bg-gray-700/50 text-gray-700 dark:text-gray-300 rounded-xl font-bold transition-all shadow-sm active:scale-95"
+            >
+              📑 Monitor Órdenes
+            </a>
+            <Link href="/exchange-logs" className="flex items-center gap-2 px-4 py-2 bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 hover:bg-gray-50 dark:hover:bg-gray-700/50 text-gray-700 dark:text-gray-300 rounded-xl font-bold transition-all shadow-sm active:scale-95">
+              📡 Logs Exchange
+            </Link>
+            <a
+              href="/settings"
+              className="flex items-center gap-2 px-4 py-2 bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 hover:bg-gray-50 dark:hover:bg-gray-700/50 text-gray-700 dark:text-gray-300 rounded-xl font-bold transition-all shadow-sm active:scale-95"
+            >
+              ⚙️ Configurar Bot
+            </a>
+          </div>
         </div>
 
         {/* Controls */}

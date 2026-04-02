@@ -5,7 +5,8 @@ import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { 
   fetchTrades, syncTrades, syncHistoricalTrades, fetchStats, 
   fetchBotStatus, fetchBotLogs, startBot, stopBot, fetchBotConfig, updateBotConfig, fetchBalances,
-  Trade, Stats, SyncResponse, BotStatus, BotSignal, BotConfig, AggregatedBalances 
+  fetchOpenOrders, fetchFailedOrders,
+  Trade, Stats, SyncResponse, BotStatus, BotSignal, BotConfig, AggregatedBalances, Order 
 } from '@/lib/api'
 
 export function useTrades(symbol: string, logic: string = 'fifo', sortBy: string = 'recent') {
@@ -104,5 +105,21 @@ export function useBalances() {
     queryKey: ['balances'],
     queryFn: () => fetchBalances(),
     refetchInterval: 60000, // Refresh every 1 minute
+  })
+}
+
+export function useOpenOrders(symbol?: string) {
+  return useQuery<Order[]>({
+    queryKey: ['open-orders', symbol],
+    queryFn: () => fetchOpenOrders(symbol),
+    refetchInterval: 5000, // Refresh every 5 seconds
+  })
+}
+
+export function useFailedOrders(limit: number = 50) {
+  return useQuery<BotSignal[]>({
+    queryKey: ['failed-orders', limit],
+    queryFn: () => fetchFailedOrders(limit),
+    refetchInterval: 10000, // Refresh every 10 seconds
   })
 }

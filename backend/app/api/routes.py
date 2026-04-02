@@ -7,10 +7,12 @@ from datetime import datetime
 from app.services.bot_service import bot_instance
 from sqlmodel import select, Session
 from pydantic import BaseModel
-from app.db.database import Fill, Trade, BotSignal, BotConfig, get_session_direct, create_db_and_tables, engine
+from app.db.database import Fill, Trade, BotSignal, BotConfig, ExchangeLog, get_session_direct, create_db_and_tables, engine
 from app.services.tracker_logic import TradeTracker
 from app.core.exchange import exchange_manager
 from app.services.history_formatter import TradeResponseFormatter, SortByEntryDateDesc, SortByEntryDateAsc, SortByPnLDesc
+from abc import ABC, abstractmethod
+import json
 
 router = APIRouter()
 
@@ -43,6 +45,90 @@ class TradeResponse(BaseModel):
     pnl_percentage: float
     duration_seconds: int
     created_at: datetime
+    is_orphan: bool = False
+    
+    # Pendientes y Extensiones UI
+    is_pending: bool = False
+    order_type: Optional[str] = None
+    tp_pnl: Optional[float] = None
+    sl_pnl: Optional[float] = None
+
+class OrderResponse(BaseModel):
+    """Response model for live open orders."""
+    id: str
+    symbol: str
+    type: str
+    side: str
+    price: float
+    amount: float
+    filled: float
+    remaining: float
+    status: str
+    datetime: datetime
+    is_bot_logged: bool = False
+    error_message: Optional[str] = None
+    
+    # Pendientes y Extensiones UI
+    is_pending: bool = False
+    order_type: Optional[str] = None
+    tp_pnl: Optional[float] = None
+    sl_pnl: Optional[float] = None
+    is_algo: bool = False
+    is_bot_logged: bool = False
+    datetime: datetime
+
+# --- SOLID ORDER MAPPERS ---
+
+class OrderMapper(ABC):
+    """Abstract Base Class for order mapping (SOLID)."""
+    @abstractmethod
+    def map(self, raw: dict) -> OrderResponse:
+        pass
+
+class StandardOrderMapper(OrderMapper):
+    """Maps Standard v1/openOrders to OrderResponse."""
+    def map(self, raw: dict) -> OrderResponse:
+        return OrderResponse(
+            id=str(raw.get('orderId') or raw.get('id', '')),
+            symbol=raw.get('symbol', ''),
+            type=raw.get('type', '').upper(),
+            side=(raw.get('side') or '').lower(),
+            price=float(raw.get('price', 0.0)),
+            amount=float(raw.get('origQty') or raw.get('amount', 0.0)),
+            filled=float(raw.get('executedQty') or raw.get('filled', 0.0)),
+            remaining=float(raw.get('remaining', 0.0)) if 'remaining' in raw else (float(raw.get('origQty', 0.0)) - float(raw.get('executedQty', 0.0))),
+            status=raw.get('status', '').upper(),
+            datetime=datetime.fromtimestamp(raw['timestamp'] / 1000) if raw.get('timestamp') else datetime.utcnow(),
+            is_algo=False,
+            is_pending=True # By definition if open
+        )
+
+class AlgoOrderMapper(OrderMapper):
+    """Maps Algo v1/openAlgoOrders to OrderResponse."""
+    def map(self, raw: dict) -> OrderResponse:
+        # Algo orders use different keys like triggerPrice, algoId
+        return OrderResponse(
+            id=str(raw.get('algoId', '')),
+            symbol=raw.get('symbol', ''),
+            type=raw.get('type', 'ALGO').upper(),
+            side=(raw.get('side') or '').lower(),
+            price=float(raw.get('triggerPrice') or raw.get('stopPrice', 0.0)),
+            amount=float(raw.get('totalQty') or raw.get('amount', 0.0)),
+            filled=float(raw.get('executedQty', 0.0)),
+            remaining=float(raw.get('totalQty', 0.0)) - float(raw.get('executedQty', 0.0)),
+            status=raw.get('algoStatus', 'NEW').upper(),
+            datetime=datetime.fromtimestamp(raw['time'] / 1000) if raw.get('time') else datetime.utcnow(),
+            is_algo=True,
+            is_pending=True
+        )
+
+def get_order_mapper(raw: dict) -> OrderMapper:
+    """Factory to get the correct mapper based on source tag."""
+    if raw.get('_source') == 'algo':
+        return AlgoOrderMapper()
+    return StandardOrderMapper()
+
+# --- END SOLID ORDER MAPPERS ---
 
 
 @router.get("/trades/history", response_model=List[TradeResponse])
@@ -94,7 +180,16 @@ async def get_trade_history(symbol: str = "BTC/USDT", logic: str = "fifo", sort_
         except Exception:
             open_positions = []
 
+        # Fetch pending orders from the order book
+        try:
+            open_orders = await exchange_manager.fetch_open_orders(symbol)
+        except Exception:
+            open_orders = []
+
         unrealized = []
+        # We will keep track of which open orders were matched as TP/SL so we don't display them double
+        matched_order_ids = set()
+
         if open_positions:
             try:
                 ticker = await exchange_manager.fetch_ticker(symbol)
@@ -118,6 +213,30 @@ async def get_trade_history(symbol: str = "BTC/USDT", logic: str = "fifo", sort_
                     entry_side=entry_side
                 )
 
+                # Correlate opposite open orders as TP/SL
+                tp_pnl_val = None
+                sl_pnl_val = None
+                
+                for order in open_orders:
+                    # An order is a closing order if it's the opposite side
+                    # and the position is open. We rough-match it by side.
+                    order_side = (order.get('side') or '').lower()
+                    if order_side and order_side != entry_side:
+                        info_dict = order.get('info', {})
+                        p_price = float(info_dict.get('stopPrice', 0)) if float(info_dict.get('stopPrice', 0)) > 0 else float(order.get('price') or 0.0)
+                        if p_price > 0:
+                            order_amount = float(order.get('amount') or entry_amount)
+                            # Calculation format matching PnL rules
+                            diff = (p_price - entry_price) if entry_side == 'buy' else (entry_price - p_price)
+                            potential_pnl = diff * order_amount
+                            
+                            # If it's profitable, it's a TP. If negative, SL.
+                            if potential_pnl > 0:
+                                tp_pnl_val = potential_pnl
+                            else:
+                                sl_pnl_val = potential_pnl
+                            matched_order_ids.add(order.get('id'))
+
                 unrealized.append(TradeResponse(
                     id=0,
                     symbol=symbol,
@@ -136,7 +255,39 @@ async def get_trade_history(symbol: str = "BTC/USDT", logic: str = "fifo", sort_
                     pnl_net=net_pnl,
                     pnl_percentage=pnl_percentage,
                     duration_seconds=0,
-                    created_at=op['entry_datetime']
+                    created_at=op['entry_datetime'],
+                    tp_pnl=tp_pnl_val,
+                    sl_pnl=sl_pnl_val
+                ))
+                
+        # Append unmatched open orders as standalone Pending Rows
+        standalone_pending = []
+        for order in open_orders:
+            if order.get('id') not in matched_order_ids:
+                info_dict = order.get('info', {})
+                p_price = float(info_dict.get('stopPrice', 0)) if float(info_dict.get('stopPrice', 0)) > 0 else float(order.get('price') or 0.0)
+                order_dt = datetime.fromtimestamp(order.get('timestamp', 0) / 1000) if order.get('timestamp') else datetime.utcnow()
+                
+                order_type = order.get('type', 'limit').upper()
+                standalone_pending.append(TradeResponse(
+                    id=0,
+                    symbol=symbol,
+                    entry_side=(order.get('side') or 'buy').lower(),
+                    entry_price=p_price,
+                    entry_amount=float(order.get('amount') or 0.0),
+                    entry_fee=0.0,
+                    entry_datetime=order_dt,
+                    exit_side='',
+                    exit_price=None,
+                    exit_amount=None,
+                    exit_fee=None,
+                    exit_datetime=None,
+                    pnl_net=0.0,
+                    pnl_percentage=0.0,
+                    duration_seconds=0,
+                    created_at=order_dt,
+                    is_pending=True,
+                    order_type=order_type
                 ))
 
         # Return combined trades processed by the Strategy Pattern formatter
@@ -148,7 +299,7 @@ async def get_trade_history(symbol: str = "BTC/USDT", logic: str = "fifo", sort_
             strategy = SortByEntryDateDesc() # default to recent
             
         formatter = TradeResponseFormatter(sorter=strategy)
-        return formatter.format_and_sort(closed, unrealized)
+        return formatter.format_and_sort(closed, unrealized + standalone_pending)
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Error fetching trade history: {str(e)}")
 
@@ -562,3 +713,78 @@ async def update_bot_config(config_update: BotConfigUpdate):
         session.commit()
         session.refresh(config)
         return config
+
+
+@router.get("/orders/open", response_model=List[OrderResponse])
+async def get_open_orders(symbol: Optional[str] = None):
+    """Get live open orders unified from Standard and Algo services."""
+    try:
+        if symbol:
+            try:
+                symbol = await exchange_manager.normalize_symbol(symbol)
+            except Exception:
+                pass
+        
+        # Fetch amalgamed results from exchange manager
+        raw_orders = await exchange_manager.fetch_open_orders(symbol)
+        
+        # Cross-reference with Bot Logs (Same as before but using normalized list)
+        with Session(engine) as session:
+            statement = select(BotSignal).where(
+                BotSignal.action_taken == "NEW_ORDER",
+                BotSignal.success == True
+            ).order_by(BotSignal.created_at.desc()).limit(100)
+            recent_signals = session.exec(statement).all()
+            
+            logged_order_ids = set()
+            for sig in recent_signals:
+                if sig.exchange_response:
+                    try:
+                        res_data = json.loads(sig.exchange_response)
+                        order_id = res_data.get('id') or res_data.get('orderId') or res_data.get('algoId')
+                        if order_id:
+                            logged_order_ids.add(str(order_id))
+                    except:
+                        pass
+
+        orders = []
+        for raw in raw_orders:
+            # Use SOLID mapper factory
+            mapper = get_order_mapper(raw)
+            normalized = mapper.map(raw)
+            
+            # Additional enrichment
+            normalized.is_bot_logged = normalized.id in logged_order_ids
+            orders.append(normalized)
+            
+        return orders
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=f"Error fetching open orders: {str(e)}")
+
+
+@router.get("/orders/failed", response_model=List[BotSignal])
+async def get_failed_orders(limit: int = 50):
+    """Get recent failed order attempts from bot logs."""
+    try:
+        with Session(engine) as session:
+            statement = select(BotSignal).where(
+                BotSignal.success == False
+            ).order_by(BotSignal.created_at.desc()).limit(limit)
+            results = session.exec(statement).all()
+            return list(results)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error fetching failed orders: {str(e)}")
+
+
+@router.get("/exchange/logs", response_model=List[ExchangeLog])
+async def get_exchange_logs(limit: int = 100, offset: int = 0):
+    """Get recent exchange interaction logs."""
+    try:
+        with get_session_direct() as session:
+            statement = select(ExchangeLog).order_by(ExchangeLog.created_at.desc()).offset(offset).limit(limit)
+            results = session.exec(statement).all()
+            return list(results)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error fetching exchange logs: {str(e)}")
