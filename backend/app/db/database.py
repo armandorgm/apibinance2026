@@ -94,6 +94,22 @@ class BotConfig(SQLModel, table=True):
     updated_at: datetime = Field(default_factory=datetime.utcnow)
 
 
+class ExchangeLog(SQLModel, table=True):
+    """
+    Global log for all raw exchange requests and responses.
+    """
+    __tablename__ = "exchange_logs"
+    
+    id: Optional[int] = Field(default=None, primary_key=True)
+    method: str = Field(index=True)
+    parameters: Optional[str] = None
+    response: Optional[str] = None
+    is_error: bool = Field(default=False)
+    error_message: Optional[str] = None
+    timestamp: int = Field(default_factory=lambda: int(datetime.utcnow().timestamp() * 1000))
+    created_at: datetime = Field(default_factory=datetime.utcnow)
+
+
 # Database engine
 engine = create_engine(
     settings.DATABASE_URL,

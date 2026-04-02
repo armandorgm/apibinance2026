@@ -22,6 +22,37 @@ export interface Trade {
   duration_seconds: number
   created_at: string
   is_orphan?: boolean
+  is_pending?: boolean
+  order_type?: string | null
+  tp_pnl?: number | null
+  sl_pnl?: number | null
+}
+
+export interface ExchangeLog {
+  id: number
+  method: string
+  parameters: string | null
+  response: string | null
+  is_error: boolean
+  error_message: string | null
+  timestamp: number
+  created_at: string
+}
+
+export interface Order {
+  id: string
+  symbol: string
+  type: string
+  side: string
+  price: number
+  amount: number
+  filled: number
+  remaining: number
+  status: string
+  datetime: string
+  is_bot_logged: boolean
+  is_algo: boolean
+  error_message?: string
 }
 
 export interface Stats {
@@ -155,6 +186,12 @@ export async function fetchBotLogs(limit: number = 10): Promise<BotSignal[]> {
   return response.json()
 }
 
+export async function fetchExchangeLogs(limit: number = 100, offset: number = 0): Promise<ExchangeLog[]> {
+  const response = await fetch(`${API_BASE_URL}/api/exchange/logs?limit=${limit}&offset=${offset}`)
+  if (!response.ok) throw new Error('Error fetching exchange logs')
+  return response.json()
+}
+
 export async function startBot(): Promise<any> {
     const response = await fetch(`${API_BASE_URL}/api/bot/start`, { method: 'POST' })
     if (!response.ok) throw new Error('Error starting bot')
@@ -186,5 +223,19 @@ export async function updateBotConfig(config: Partial<BotConfig>): Promise<BotCo
 export async function fetchBalances(): Promise<AggregatedBalances> {
   const response = await fetch(`${API_BASE_URL}/api/balances`)
   if (!response.ok) throw new Error('Error fetching balances')
+  return response.json()
+}
+
+export async function fetchOpenOrders(symbol?: string): Promise<Order[]> {
+  const url = new URL(`${API_BASE_URL}/api/orders/open`)
+  if (symbol) url.searchParams.append('symbol', symbol)
+  const response = await fetch(url.toString())
+  if (!response.ok) throw new Error('Error fetching open orders')
+  return response.json()
+}
+
+export async function fetchFailedOrders(limit: number = 50): Promise<BotSignal[]> {
+  const response = await fetch(`${API_BASE_URL}/api/orders/failed?limit=${limit}`)
+  if (!response.ok) throw new Error('Error fetching failed orders')
   return response.json()
 }

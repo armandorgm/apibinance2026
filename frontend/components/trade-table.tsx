@@ -61,10 +61,11 @@ export function TradeTable({ trades }: TradeTableProps) {
           </tr>
         </thead>
         <tbody className="bg-white dark:bg-gray-800 divide-y divide-gray-200 dark:divide-gray-700">
-          {trades.map((trade) => (
+          {trades.map((trade, index) => (
             <tr
-              key={trade.id}
+              key={trade.id || `trade-${index}`}
               className={`hover:bg-gray-50 dark:hover:bg-gray-700 transition-colors ${
+                trade.is_pending ? 'bg-purple-50 dark:bg-purple-900/20' :
                 trade.is_orphan ? 'bg-orange-50 dark:bg-orange-900/20' : 
                 (!trade.exit_datetime ? 'bg-blue-50 dark:bg-blue-900/20' : '')
               }`}
@@ -78,7 +79,11 @@ export function TradeTable({ trades }: TradeTableProps) {
                 </div>
               </td>
               <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-900 dark:text-white">
-                {trade.exit_datetime ? (
+                {trade.is_pending ? (
+                  <span className="px-2 py-1 bg-purple-100 dark:bg-purple-800 text-purple-700 dark:text-purple-200 rounded text-xs font-bold">
+                    PENDING {trade.order_type}
+                  </span>
+                ) : trade.exit_datetime ? (
                   <div className="flex flex-col">
                     <span className="font-medium">{formatDate(trade.exit_datetime)}</span>
                     {trade.exit_side && (
@@ -100,20 +105,55 @@ export function TradeTable({ trades }: TradeTableProps) {
                 {formatPrice(trade.entry_price)}
               </td>
               <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-900 dark:text-white">
-                {formatPrice(trade.exit_price)}
+                {trade.is_pending ? (
+                  <span className="font-bold text-purple-600 dark:text-purple-400">
+                    {formatPrice(trade.entry_price)}
+                  </span>
+                ) : (
+                  formatPrice(trade.exit_price)
+                )}
               </td>
               <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500 dark:text-gray-400">
                 {trade.duration_seconds > 0 ? formatDuration(trade.duration_seconds) : <span className="text-gray-500">—</span>}
               </td>
-              <td className={`px-6 py-4 whitespace-nowrap text-sm font-semibold ${
-                trade.pnl_net >= 0 ? 'text-green-600' : 'text-red-600'
-              }`}>
-                {formatPrice(trade.pnl_net)}
+              <td className="px-6 py-4 whitespace-nowrap text-sm">
+                {trade.is_pending ? (
+                  <span className="text-gray-400">—</span>
+                ) : (
+                  <div className="flex flex-col">
+                    <span className={`font-semibold ${trade.pnl_net >= 0 ? 'text-green-600' : 'text-red-600'}`}>
+                      {formatPrice(trade.pnl_net)}
+                    </span>
+                    {!trade.exit_datetime && (
+                      <div className="flex gap-2 mt-1 text-[10px]">
+                        {trade.tp_pnl !== null && trade.tp_pnl !== undefined ? (
+                          <span className="text-green-500 bg-green-50 dark:bg-green-900/30 px-1 rounded border border-green-200 dark:border-green-800">
+                            TP: {formatPrice(trade.tp_pnl)}
+                          </span>
+                        ) : (
+                          <span className="text-gray-400 bg-gray-100 dark:bg-gray-800 px-1 rounded border border-gray-200 dark:border-gray-700" title="No TP order found">
+                            TP: ⚠️
+                          </span>
+                        )}
+                        {trade.sl_pnl !== null && trade.sl_pnl !== undefined ? (
+                          <span className="text-red-500 bg-red-50 dark:bg-red-900/30 px-1 rounded border border-red-200 dark:border-red-800">
+                            SL: {formatPrice(trade.sl_pnl)}
+                          </span>
+                        ) : (
+                          <span className="text-gray-400 bg-gray-100 dark:bg-gray-800 px-1 rounded border border-gray-200 dark:border-gray-700" title="No SL order found">
+                            SL: ⚠️
+                          </span>
+                        )}
+                      </div>
+                    )}
+                  </div>
+                )}
               </td>
               <td className={`px-6 py-4 whitespace-nowrap text-sm font-semibold ${
-                trade.pnl_percentage >= 0 ? 'text-green-600' : 'text-red-600'
+                trade.is_pending ? 'text-gray-400' :
+                (trade.pnl_percentage >= 0 ? 'text-green-600' : 'text-red-600')
               }`}>
-                {formatPercentage(trade.pnl_percentage)}
+                {trade.is_pending ? '—' : formatPercentage(trade.pnl_percentage)}
               </td>
             </tr>
           ))}

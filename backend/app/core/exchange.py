@@ -8,6 +8,7 @@ from app.core.config import settings
 import asyncio
 import time
 from datetime import datetime
+from app.services.exchange_logger import ExchangeLogger
 
 
 class ExchangeManager:
@@ -37,6 +38,7 @@ class ExchangeManager:
                 'options': {
                     'defaultType': 'future',
                     'adjustForTimeDifference': True,
+                    'warnOnFetchOpenOrdersWithoutSymbol': False,
                 },
                 'sandbox': settings.TESTNET,
             })
@@ -80,22 +82,36 @@ class ExchangeManager:
         try:
             trades = await exchange.fetch_my_trades(symbol, since=since, limit=limit, params=params or {})
             print(f"--- [DEBUG] Binance API returned {len(trades)} trades for {symbol}.")
+            ExchangeLogger.log_request("fetch_my_trades", {"symbol": symbol, "since": since, "limit": limit, "params": params}, response=trades)
             return trades
         except Exception as e:
             print(f"--- [DEBUG] ERROR fetching trades for {symbol}: {e}")
+            ExchangeLogger.log_request("fetch_my_trades", {"symbol": symbol, "since": since, "limit": limit, "params": params}, error_message=str(e))
             raise Exception(f"Error fetching trades from Binance: {str(e)}")
     
     async def fetch_balance(self) -> Dict[str, Any]:
         """Fetch account balance (Async)."""
         await self._rate_limit()
         exchange = await self.get_exchange()
-        return await exchange.fetch_balance()
+        try:
+            b = await exchange.fetch_balance()
+            ExchangeLogger.log_request("fetch_balance", {}, response=b)
+            return b
+        except Exception as e:
+            ExchangeLogger.log_request("fetch_balance", {}, error_message=str(e))
+            raise e
     
     async def fetch_ticker(self, symbol: str) -> Dict[str, Any]:
         """Fetch current ticker price (Async)."""
         await self._rate_limit()
         exchange = await self.get_exchange()
-        return await exchange.fetch_ticker(symbol)
+        try:
+            t = await exchange.fetch_ticker(symbol)
+            ExchangeLogger.log_request("fetch_ticker", {"symbol": symbol}, response=t)
+            return t
+        except Exception as e:
+            ExchangeLogger.log_request("fetch_ticker", {"symbol": symbol}, error_message=str(e))
+            raise e
 
     async def create_order(
         self,
@@ -120,9 +136,11 @@ class ExchangeManager:
                 params=params or {}
             )
             print(f"--- [DEBUG] Order created: {order['id']} ({side} {amount} {symbol})")
+            ExchangeLogger.log_request("create_order", {"symbol": symbol, "side": side, "amount": amount, "price": price, "type": order_type}, response=order)
             return order
         except Exception as e:
             print(f"--- [DEBUG] ERROR creating order for {symbol}: {e}")
+            ExchangeLogger.log_request("create_order", {"symbol": symbol, "side": side, "amount": amount, "price": price, "type": order_type}, error_message=str(e))
             raise Exception(f"Error creating order on Binance: {str(e)}")
 
     async def get_open_positions(self, symbol: Optional[str] = None) -> List[Dict[str, Any]]:
@@ -130,8 +148,76 @@ class ExchangeManager:
         await self._rate_limit()
         exchange = await self.get_exchange()
         
-        positions = await exchange.fetch_positions(symbols=[symbol] if symbol else None)
-        return [p for p in positions if float(p.get('contracts', 0)) > 0 or float(p.get('notional', 0)) > 0]
+        try:
+            positions = await exchange.fetch_positions(symbols=[symbol] if symbol else None)
+            res = [p for p in positions if float(p.get('contracts', 0)) > 0 or float(p.get('notional', 0)) > 0]
+            ExchangeLogger.log_request("get_open_positions", {"symbol": symbol}, response=res)
+            return res
+        except Exception as e:
+            ExchangeLogger.log_request("get_open_positions", {"symbol": symbol}, error_message=str(e))
+            raise e
+
+    async def fetch_open_orders(self, symbol: Optional[str] = None) -> List[Dict[str, Any]]:
+        """
+        Fetch current open orders from Binance Futures (Async).
+        Unifies Standard Service (v1/openOrders) and Algo Service (v1/openAlgoOrders).
+        """
+        await self._rate_limit()
+        exchange = await self.get_exchange()
+        
+        # We fetch both in parallel for efficiency
+        import asyncio
+        import json
+        
+        try:
+            # 1. Standard Orders via CCXT standard method
+            t_std = exchange.fetch_open_orders(symbol)
+            
+            # 2. Algo Orders (Conditional TP/SL/Trailing)
+            # Binance Algo endpoint might not exist depending on the CCXT version or account type
+            t_algo = None
+            if hasattr(exchange, 'fapiPrivateGetOpenAlgoOrders'):
+                # Wrap it in an async function to make it awaitable like t_std
+                async def fetch_algo():
+                    return await exchange.fapiPrivateGetOpenAlgoOrders({'symbol': symbol.replace('/', '') if symbol else None})
+                t_algo = fetch_algo()
+            
+            # Awaits in parallel if both exist
+            if t_algo:
+                std_res, algo_res = await asyncio.gather(t_std, t_algo, return_exceptions=True)
+            else:
+                std_res = await t_std
+                algo_res = []
+            
+            # Process standard results
+            standard_orders = std_res if not isinstance(std_res, Exception) else []
+            if isinstance(std_res, Exception):
+                print(f"[EXCHANGE] Error fetching standard orders: {std_res}")
+                # Re-raise if it's the primary channel and the only one we depend on
+                raise std_res
+                
+            # Process algo results (Binance returns list of orders or object with 'orders' field)
+            algo_orders = []
+            if not isinstance(algo_res, Exception):
+                algo_orders = algo_res if isinstance(algo_res, list) else algo_res.get('orders', [])
+            else:
+                print(f"[EXCHANGE] Error fetching algo orders: {algo_res}")
+
+            # Return combined list for the API layer to normalize
+            # We tag them so the mapper knows the source
+            for o in standard_orders: o['_source'] = 'standard'
+            for o in algo_orders: o['_source'] = 'algo'
+            
+            combined = standard_orders + algo_orders
+            ExchangeLogger.log_request("fetch_open_orders", {"symbol": symbol}, response=combined)
+            return combined
+            
+        except Exception as e:
+            print(f"[EXCHANGE] Critical error in fetch_open_orders: {e}")
+            ExchangeLogger.log_request("fetch_open_orders", {"symbol": symbol}, error_message=str(e))
+            # If all fails, return empty to not crash the UI
+            return []
+
 
     async def normalize_symbol(self, symbol: str) -> str:
         """Normalize symbol to CCXT market format (Async)."""

@@ -19,6 +19,7 @@ Rastreador de operaciones para Binance Futures con soporte para emparejamiento F
   - `ruleEngine.ts`: Motor funcional de evaluación de estrategias.
 - `docs/incidents/`: Registro de incidentes y resoluciones.
 - `docs/MATCHING_SYSTEM.md`: Arquitectura detallada del sistema de emparejamiento (Strategy pattern, FIFO/LIFO/Atomic).
+- `frontend/app/exchange-logs/`: Monitor interactivo central para reportes y respuestas CCXT.
 
 ## Flujos Críticos de Datos
 1. **Sincronización**: Binance API -> `exchange.py` -> `fills` table -> `tracker_logic.py` -> `trades` table.
@@ -34,4 +35,6 @@ Rastreador de operaciones para Binance Futures con soporte para emparejamiento F
 - `frontend/app/page.tsx`: Orquesta del dashboard incluyendo `BalanceWidget`, `BotMonitor` y filtros dinámicos (como Query Params inyectados hacia useTrades).
 - `backend/app/services/bot_service.py`: Ejecuta órdenes transformando el monto inversión configuado (USD Notional) a cantidad exacta de contratos vía matemática (`Notional / Live Market Price`), pasando por el filtro de CCXT `amount_to_precision` para lograr compatibilidad estricta con Binance eliminando errores `-4164 MIN_NOTIONAL` y `-4111 PRECISION`.
 - `frontend/app/settings/page.tsx`: Vista de control paramétrico estricto para el Bot Autónomo. La UI aclara la lógica de apalancamiento vs input en notional.
-- `frontend/components/balance-widget.tsx`: Dashboard Balance View con pestañas e interfaz unificada. 
+- `frontend/components/balance-widget.tsx`: Dashboard Balance View con pestañas e interfaz unificada.
+- `backend/app/services/exchange_logger.py`: Interceptor diseñado en base al SRP para persistir la actividad CCXT al completo.
+- `backend/app/db/database.py`: Incorpora histórico infinito vía `ExchangeLog` aislando la carga del sistema central de exchange operations.
