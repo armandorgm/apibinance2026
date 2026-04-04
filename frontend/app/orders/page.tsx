@@ -118,13 +118,28 @@ export default function OrdersPage() {
                                 ⚖️ STANDARD (LIMIT)
                               </span>
                             )}
-                            <div className="flex items-center">
-                              <span className="text-xs font-semibold px-2 py-1 rounded bg-gray-100 dark:bg-gray-700 text-gray-600 dark:text-gray-300 mr-2 uppercase">
+                            <div className="flex flex-wrap items-center gap-1">
+                              <span className="text-xs font-semibold px-2 py-1 rounded bg-gray-100 dark:bg-gray-700 text-gray-600 dark:text-gray-300 uppercase">
                                 {order.type}
                               </span>
                               <span className={`text-xs font-bold ${order.side === 'buy' ? 'text-green-500' : 'text-red-500'}`}>
                                 {order.side.toUpperCase()}
                               </span>
+                              {order.is_algo && order.conditional_kind === 'take_profit' && order.side === 'sell' && (
+                                <span className="text-[10px] font-bold text-amber-700 dark:text-amber-400 bg-amber-50 dark:bg-amber-900/40 px-1.5 py-0.5 rounded border border-amber-200 dark:border-amber-800">
+                                  TP → cierra LONG
+                                </span>
+                              )}
+                              {order.is_algo && order.conditional_kind === 'stop_loss' && order.side === 'sell' && (
+                                <span className="text-[10px] font-bold text-rose-700 dark:text-rose-400 bg-rose-50 dark:bg-rose-900/30 px-1.5 py-0.5 rounded border border-rose-200 dark:border-rose-800">
+                                  SL → cierra LONG
+                                </span>
+                              )}
+                              {order.position_side && (
+                                <span className="text-[10px] text-gray-500 dark:text-gray-400 font-mono">
+                                  pos: {order.position_side.toUpperCase()}
+                                </span>
+                              )}
                             </div>
                           </div>
                         </td>

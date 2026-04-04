@@ -26,6 +26,19 @@ export interface Trade {
   order_type?: string | null
   tp_pnl?: number | null
   sl_pnl?: number | null
+  /** Tipos de orden (Binance) calculados en backend */
+  entry_order_tags?: string[]
+  exit_order_tags?: string[]
+  /** Salida vinculada (CONDITIONAL) calculada en el backend; mismo createTime que la entrada */
+  conditional_exit?: {
+    algo_id: string
+    order_type: string
+    side: string
+    trigger_price: number
+    create_time_ms: number
+    conditional_kind?: string | null
+    algo_type?: string | null
+  } | null
 }
 
 export interface ExchangeLog {
@@ -53,6 +66,13 @@ export interface Order {
   is_bot_logged: boolean
   is_algo: boolean
   error_message?: string
+  /** LONG/SHORT/BOTH desde Binance openAlgoOrders */
+  position_side?: string | null
+  algo_type?: string | null
+  /** take_profit | stop_loss | trailing */
+  conditional_kind?: string | null
+  closes_long?: boolean | null
+  closes_short?: boolean | null
 }
 
 export interface Stats {

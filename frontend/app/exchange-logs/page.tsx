@@ -2,7 +2,7 @@
 
 import { useEffect, useState } from 'react'
 import { ExchangeLogsViewer } from '@/components/exchange-logs-viewer'
-import { fetchExchangeLogs, ExchangeLog } from '@/lib/api'
+import { fetchExchangeLogs, fetchOpenOrders, ExchangeLog } from '@/lib/api'
 
 export default function ExchangeLogsPage() {
   const [logs, setLogs] = useState<ExchangeLog[]>([])
@@ -18,6 +18,18 @@ export default function ExchangeLogsPage() {
     } catch (err) {
       setError('Error al conectar con la API de logs del exchange')
     } finally {
+      setLoading(false)
+    }
+  }
+
+  const handleTestRequest = async () => {
+    try {
+      setLoading(true)
+      // Disparador manual para refrescar las ordenes standard y algo. 
+      await fetchOpenOrders('BTC/USDT') 
+      await loadLogs()
+    } catch (err) {
+      setError('Error al enviar la petición de prueba al exchange')
       setLoading(false)
     }
   }
@@ -38,13 +50,23 @@ export default function ExchangeLogsPage() {
               Registro crudo de interacción hacia la API de Binance
             </p>
           </div>
-          <button
-            onClick={loadLogs}
-            disabled={loading}
-            className="flex items-center gap-2 px-4 py-2 bg-indigo-600 text-white rounded-md hover:bg-indigo-700 transition disabled:opacity-50"
-          >
-            {loading ? 'Cargando...' : 'Actualizar'}
-          </button>
+          <div className="flex gap-3">
+            <button
+              onClick={handleTestRequest}
+              disabled={loading}
+              className="flex items-center gap-2 px-4 py-2 bg-emerald-600 text-white rounded-md hover:bg-emerald-700 transition disabled:opacity-50"
+              title="Dispara una petición `/fapi/v1/algoOrders` real al exchange para loggearla"
+            >
+              🧪 Probar API Real
+            </button>
+            <button
+              onClick={loadLogs}
+              disabled={loading}
+              className="flex items-center gap-2 px-4 py-2 bg-indigo-600 text-white rounded-md hover:bg-indigo-700 transition disabled:opacity-50"
+            >
+              {loading ? 'Cargando...' : 'Actualizar'}
+            </button>
+          </div>
         </div>
 
         {error ? (

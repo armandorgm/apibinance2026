@@ -200,10 +200,13 @@ class TradeTracker:
                     'fee': 0.0,
                     'timestamp': fill.timestamp,
                     'datetime': fill.datetime,
-                    'fill_count': 0
+                    'fill_count': 0,
+                    'order_type': None,
                 }
             
             o = orders[oid]
+            if getattr(fill, "order_type", None) and o.get("order_type") is None:
+                o["order_type"] = fill.order_type
             o['amount'] += fill.amount
             o['cost'] += fill.cost
             o['fee'] += fill.fee
@@ -241,7 +244,11 @@ class TradeTracker:
             'exit_datetime': sell['datetime'],
             'pnl_net': net_pnl,
             'pnl_percentage': pnl_percentage,
-            'duration_seconds': abs(sell['timestamp'] - buy['timestamp']) // 1000
+            'duration_seconds': abs(sell['timestamp'] - buy['timestamp']) // 1000,
+            'entry_order_id': str(buy.get('order_id') or ''),
+            'exit_order_id': str(sell.get('order_id') or ''),
+            'entry_order_type': buy.get('order_type'),
+            'exit_order_type': sell.get('order_type'),
         }
 
     def match_trades(self, fills: List[Fill], strategy_name: str = "atomic_fifo") -> List[Dict[str, Any]]:
@@ -351,6 +358,7 @@ class TradeTracker:
                     'entry_fee': b['fee'],
                     'entry_timestamp': b['timestamp'],
                     'entry_datetime': b['datetime'],
+                    'entry_order_type': b.get('order_type'),
                 })
 
         # Unmatched sells → orphan sells (closed before history or data gap)
@@ -364,6 +372,7 @@ class TradeTracker:
                     'entry_fee': s['fee'],
                     'entry_timestamp': s['timestamp'],
                     'entry_datetime': s['datetime'],
+                    'entry_order_type': s.get('order_type'),
                     'is_orphan': True,  # Marker for UI
                 })
 

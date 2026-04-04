@@ -8,6 +8,35 @@ interface TradeTableProps {
   trades: Trade[]
 }
 
+function TypeTagBadges({ tags, variant }: { tags: string[] | undefined; variant: 'entry' | 'exit' }) {
+  const list = tags && tags.length > 0 ? tags : []
+  const base =
+    variant === 'entry'
+      ? 'bg-emerald-50 text-emerald-800 dark:bg-emerald-900/30 dark:text-emerald-200 border border-emerald-200/60 dark:border-emerald-800/60'
+      : 'bg-amber-50 text-amber-900 dark:bg-amber-900/25 dark:text-amber-100 border border-amber-200/60 dark:border-amber-800/60'
+
+  if (list.length === 0) {
+    return (
+      <span className="text-[10px] text-gray-400 dark:text-gray-500 mt-1" title="Sin tipo en datos; sincroniza o espera enriquecimiento">
+        —
+      </span>
+    )
+  }
+
+  return (
+    <div className="flex flex-wrap gap-1 mt-1">
+      {list.map((tag) => (
+        <span
+          key={tag}
+          className={`px-1.5 py-0.5 rounded text-[10px] font-semibold ${base}`}
+        >
+          {tag}
+        </span>
+      ))}
+    </div>
+  )
+}
+
 export function TradeTable({ trades }: TradeTableProps) {
   if (trades.length === 0) {
     return (
@@ -70,33 +99,55 @@ export function TradeTable({ trades }: TradeTableProps) {
                 (!trade.exit_datetime ? 'bg-blue-50 dark:bg-blue-900/20' : '')
               }`}
             >
-              <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-900 dark:text-white">
+              <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-900 dark:text-white align-top">
                 <div className="flex flex-col">
                   <span className="font-medium">{formatDate(trade.entry_datetime)}</span>
                   <span className={`text-xs ${trade.entry_side === 'buy' ? 'text-green-600' : 'text-red-600'}`}>
                     {trade.entry_side.toUpperCase()}
                   </span>
+                  <TypeTagBadges tags={trade.entry_order_tags} variant="entry" />
                 </div>
               </td>
-              <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-900 dark:text-white">
-                {trade.is_pending ? (
-                  <span className="px-2 py-1 bg-purple-100 dark:bg-purple-800 text-purple-700 dark:text-purple-200 rounded text-xs font-bold">
-                    PENDING {trade.order_type}
-                  </span>
-                ) : trade.exit_datetime ? (
-                  <div className="flex flex-col">
-                    <span className="font-medium">{formatDate(trade.exit_datetime)}</span>
-                    {trade.exit_side && (
-                      <span className={`text-xs ${trade.exit_side === 'buy' ? 'text-green-600' : 'text-red-600'}`}>
-                        {trade.exit_side.toUpperCase()}
+              <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-900 dark:text-white align-top">
+                <div className="flex flex-col gap-1">
+                  {trade.is_pending ? (
+                    <span className="px-2 py-1 bg-purple-100 dark:bg-purple-800 text-purple-700 dark:text-purple-200 rounded text-xs font-bold">
+                      PENDING {trade.order_type}
+                    </span>
+                  ) : trade.exit_datetime ? (
+                    <div className="flex flex-col">
+                      <span className="font-medium">{formatDate(trade.exit_datetime)}</span>
+                      {trade.exit_side && (
+                        <span className={`text-xs ${trade.exit_side === 'buy' ? 'text-green-600' : 'text-red-600'}`}>
+                          {trade.exit_side.toUpperCase()}
+                        </span>
+                      )}
+                    </div>
+                  ) : trade.conditional_exit ? (
+                    <div className="flex flex-col gap-0.5">
+                      <span className="text-xs font-semibold text-amber-700 dark:text-amber-300">
+                        CONDITIONAL · {trade.conditional_exit.order_type}
                       </span>
-                    )}
-                  </div>
-                ) : (
-                  <span className="text-gray-500 italic">
-                    {trade.is_orphan ? 'Orphan (unmatched)' : 'Open (floating)'}
-                  </span>
-                )}
+                      <span className="text-xs text-gray-600 dark:text-gray-300">
+                        Trigger {formatPrice(trade.conditional_exit.trigger_price)} ·{' '}
+                        {trade.conditional_exit.side.toUpperCase()}
+                      </span>
+                      {trade.conditional_exit.conditional_kind ? (
+                        <span className="text-[10px] uppercase text-gray-500 dark:text-gray-400">
+                          {trade.conditional_exit.conditional_kind.replace(/_/g, ' ')}
+                        </span>
+                      ) : null}
+                      <span className="text-[10px] text-gray-400 dark:text-gray-500 font-mono">
+                        algo #{trade.conditional_exit.algo_id}
+                      </span>
+                    </div>
+                  ) : (
+                    <span className="text-gray-500 italic">
+                      {trade.is_orphan ? 'Orphan (unmatched)' : 'Open (floating)'}
+                    </span>
+                  )}
+                  <TypeTagBadges tags={trade.exit_order_tags} variant="exit" />
+                </div>
               </td>
               <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-900 dark:text-white">
                 {formatAmount(trade.entry_amount)}
