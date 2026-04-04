@@ -38,3 +38,11 @@ Rastreador de operaciones para Binance Futures con soporte para emparejamiento F
 - `frontend/components/balance-widget.tsx`: Dashboard Balance View con pestañas e interfaz unificada.
 - `backend/app/services/exchange_logger.py`: Interceptor diseñado en base al SRP para persistir la actividad CCXT al completo.
 - `backend/app/db/database.py`: Incorpora histórico infinito vía `ExchangeLog` aislando la carga del sistema central de exchange operations.
+
+## AI Agent Configuration (Updated 2026-04-04)
+
+- **`AGENTS.md` (project root):** Single source of truth for ALL AI agents (Antigravity, RooCode, Continue, Cursor, GitHub Copilot, Claude Dev). Contains project overview, tech stack, key components, Binance API notes, agent roles, execution standards, GitFlow, documentation protocol, and code style. **This file supersedes all other agent configuration files.**
+- `.agents/workflows/`: Slash commands for Antigravity (`/gitflow-process`, `/orquestador`). Still active and referenced from `AGENTS.md`.
+- `.agents/skills/`: Antigravity skill definitions. Still active.
+- `.cursorrules`: Redirect → points to `AGENTS.md` (Cursor backward compatibility).
+- `.gemini/gemini.md`: Redirect → points to `AGENTS.md` (Antigravity backward compatibility).
