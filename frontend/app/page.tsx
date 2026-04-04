@@ -64,6 +64,9 @@ export default function Home() {
             <Link href="/exchange-logs" className="flex items-center gap-2 px-4 py-2 bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 hover:bg-gray-50 dark:hover:bg-gray-700/50 text-gray-700 dark:text-gray-300 rounded-xl font-bold transition-all shadow-sm active:scale-95">
               📡 Logs Exchange
             </Link>
+            <Link href="/api-tester" className="flex items-center gap-2 px-4 py-2 bg-white dark:bg-emerald-900 border border-emerald-200 dark:border-emerald-700 hover:bg-emerald-50 dark:hover:bg-emerald-800/80 text-emerald-700 dark:text-emerald-300 rounded-xl font-bold transition-all shadow-sm active:scale-95">
+              🧪 API Tester
+            </Link>
             <a
               href="/settings"
               className="flex items-center gap-2 px-4 py-2 bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 hover:bg-gray-50 dark:hover:bg-gray-700/50 text-gray-700 dark:text-gray-300 rounded-xl font-bold transition-all shadow-sm active:scale-95"

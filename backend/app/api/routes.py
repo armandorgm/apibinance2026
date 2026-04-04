@@ -2,15 +2,35 @@
 API routes for the Binance Futures Tracker.
 """
 from fastapi import APIRouter, HTTPException
-from typing import List, Optional
+from typing import Any, List, Optional
 from datetime import datetime
 from app.services.bot_service import bot_instance
 from sqlmodel import select, Session
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict
 from app.db.database import Fill, Trade, BotSignal, BotConfig, ExchangeLog, get_session_direct, create_db_and_tables, engine
 from app.services.tracker_logic import TradeTracker
 from app.core.exchange import exchange_manager
 from app.services.history_formatter import TradeResponseFormatter, SortByEntryDateDesc, SortByEntryDateAsc, SortByPnLDesc
+from app.services.conditional_exit_link import (
+    ConditionalExitInfo,
+    aggregate_conditional_orders_by_create_time,
+    apply_legacy_floating_tp_sl,
+    build_conditional_exit_info,
+    compute_tp_sl_from_order,
+    cross_entry_timestamp_with_conditional_orders,
+    filter_conditional_algo_orders,
+    merge_tp_sl,
+    sort_linked_orders_for_display,
+)
+from app.services.order_type_tags import (
+    merge_tag_lists,
+    tags_from_binance_order_type,
+    tags_from_open_order_response,
+)
+from app.services.order_type_enrichment import (
+    enrich_missing_fill_order_types,
+    sync_trade_order_metadata_from_fills,
+)
 from abc import ABC, abstractmethod
 import json
 
@@ -29,6 +49,8 @@ class SyncResponse(BaseModel):
 
 class TradeResponse(BaseModel):
     """Response model for trade history."""
+    model_config = ConfigDict(extra='ignore')
+
     id: int
     symbol: str
     entry_side: str
@@ -52,6 +74,11 @@ class TradeResponse(BaseModel):
     order_type: Optional[str] = None
     tp_pnl: Optional[float] = None
     sl_pnl: Optional[float] = None
+    # Salida condicional vinculada en servidor (createTime == entry timestamp)
+    conditional_exit: Optional[ConditionalExitInfo] = None
+    # Tipos de orden (entrada / salida) derivados de Binance con precisión
+    entry_order_tags: List[str] = []
+    exit_order_tags: List[str] = []
 
 class OrderResponse(BaseModel):
     """Response model for live open orders."""
@@ -67,15 +94,21 @@ class OrderResponse(BaseModel):
     datetime: datetime
     is_bot_logged: bool = False
     error_message: Optional[str] = None
-    
+
     # Pendientes y Extensiones UI
     is_pending: bool = False
     order_type: Optional[str] = None
     tp_pnl: Optional[float] = None
     sl_pnl: Optional[float] = None
     is_algo: bool = False
-    is_bot_logged: bool = False
-    datetime: datetime
+    # Futures conditional (openAlgoOrders): positionSide + clasificación TP/SL
+    position_side: Optional[str] = None
+    algo_type: Optional[str] = None
+    conditional_kind: Optional[str] = None  # take_profit | stop_loss | trailing
+    closes_long: Optional[bool] = None
+    closes_short: Optional[bool] = None
+    # Binance FAPI createTime (ms); solo CONDITIONAL suele tenerlo para cruce con fills
+    create_time_ms: Optional[int] = None
 
 # --- SOLID ORDER MAPPERS ---
 
@@ -100,26 +133,87 @@ class StandardOrderMapper(OrderMapper):
             status=raw.get('status', '').upper(),
             datetime=datetime.fromtimestamp(raw['timestamp'] / 1000) if raw.get('timestamp') else datetime.utcnow(),
             is_algo=False,
-            is_pending=True # By definition if open
+            is_pending=True,  # By definition if open
+            create_time_ms=int(raw['timestamp']) if raw.get('timestamp') is not None else None,
         )
 
+def _algo_order_timestamp(raw: dict) -> datetime:
+    """Ms timestamps from FAPI openAlgoOrders or SAPI algo futures."""
+    for key in ('time', 'createTime', 'updateTime', 'bookTime', 'transactTime'):
+        v = raw.get(key)
+        if v is not None and v != 0:
+            try:
+                return datetime.utcfromtimestamp(int(v) / 1000)
+            except (TypeError, ValueError, OSError):
+                continue
+    return datetime.utcnow()
+
+
+def _conditional_kind_from_order_type(order_type: str) -> Optional[str]:
+    ot = (order_type or '').upper()
+    if 'TRAILING' in ot:
+        return 'trailing'
+    if 'TAKE_PROFIT' in ot:
+        return 'take_profit'
+    if 'STOP' in ot:
+        return 'stop_loss'
+    return None
+
+
 class AlgoOrderMapper(OrderMapper):
-    """Maps Algo v1/openAlgoOrders to OrderResponse."""
+    """
+    Maps Binance futures algo / conditional orders.
+    FAPI openAlgoOrders: orderType, triggerPrice, side (SELL = TP para long), quantity, algoType CONDITIONAL.
+    SAPI algo/futures: totalQty, bookTime, etc.
+    """
     def map(self, raw: dict) -> OrderResponse:
-        # Algo orders use different keys like triggerPrice, algoId
+        order_type = (
+            raw.get('orderType') or raw.get('type') or 'ALGO'
+        )
+        order_type_u = str(order_type).upper()
+        side = (raw.get('side') or '').lower()
+        position_side = (raw.get('positionSide') or '') or None
+
+        qty = float(raw.get('quantity') or raw.get('totalQty') or raw.get('amount') or 0.0)
+        filled = float(raw.get('executedQty') or 0.0)
+        remaining = qty - filled
+
+        trigger = raw.get('triggerPrice') or raw.get('stopPrice') or 0.0
+        price = float(trigger) if trigger not in (None, '') else 0.0
+
+        kind = _conditional_kind_from_order_type(order_type_u)
+        # Futuros reduce-only: SELL cierra / toma profit en posición LONG; BUY en SHORT.
+        closes_long = side == 'sell'
+        closes_short = side == 'buy'
+
+        create_time_ms = None
+        ct = raw.get('createTime')
+        if ct is not None and ct != 0:
+            try:
+                create_time_ms = int(ct)
+            except (TypeError, ValueError):
+                create_time_ms = None
+
         return OrderResponse(
             id=str(raw.get('algoId', '')),
             symbol=raw.get('symbol', ''),
-            type=raw.get('type', 'ALGO').upper(),
-            side=(raw.get('side') or '').lower(),
-            price=float(raw.get('triggerPrice') or raw.get('stopPrice', 0.0)),
-            amount=float(raw.get('totalQty') or raw.get('amount', 0.0)),
-            filled=float(raw.get('executedQty', 0.0)),
-            remaining=float(raw.get('totalQty', 0.0)) - float(raw.get('executedQty', 0.0)),
-            status=raw.get('algoStatus', 'NEW').upper(),
-            datetime=datetime.fromtimestamp(raw['time'] / 1000) if raw.get('time') else datetime.utcnow(),
+            type=order_type_u,
+            side=side,
+            price=price,
+            amount=qty,
+            filled=filled,
+            remaining=remaining,
+            status=str(raw.get('algoStatus') or raw.get('status') or 'NEW').upper(),
+            datetime=_algo_order_timestamp(raw),
             is_algo=True,
-            is_pending=True
+            is_pending=True,
+            order_type=order_type_u,
+            position_side=position_side.lower() if position_side else None,
+            algo_type=(raw.get('algoType') or None),
+            conditional_kind=kind,
+            closes_long=closes_long,
+            closes_short=closes_short,
+            create_time_ms=create_time_ms,
         )
 
 def get_order_mapper(raw: dict) -> OrderMapper:
@@ -143,7 +237,13 @@ async def get_trade_history(symbol: str = "BTC/USDT", logic: str = "fifo", sort_
             symbol = await exchange_manager.normalize_symbol(symbol)
         except Exception:
             pass
-            
+
+        try:
+            await enrich_missing_fill_order_types(symbol)
+            sync_trade_order_metadata_from_fills(symbol, "atomic_fifo")
+        except Exception:
+            pass
+
         tracker = TradeTracker(symbol)
         
         # Determine strategy from logic string
@@ -161,7 +261,18 @@ async def get_trade_history(symbol: str = "BTC/USDT", logic: str = "fifo", sort_
                 fills = session.exec(statement).all()
             matched_trades = tracker.match_trades(fills, strategy)
             matched_trades.sort(key=lambda x: x['entry_timestamp'], reverse=True)
-            closed = [TradeResponse(**{**t, 'id': i, 'created_at': t['entry_datetime']}) for i, t in enumerate(matched_trades)]
+            closed = [
+                TradeResponse(
+                    **{
+                        **t,
+                        'id': i,
+                        'created_at': t['entry_datetime'],
+                        'entry_order_tags': tags_from_binance_order_type(t.get('entry_order_type')),
+                        'exit_order_tags': tags_from_binance_order_type(t.get('exit_order_type')),
+                    }
+                )
+                for i, t in enumerate(matched_trades)
+            ]
         else:
             with get_session_direct() as session:
                 statement = (
@@ -172,7 +283,16 @@ async def get_trade_history(symbol: str = "BTC/USDT", logic: str = "fifo", sort_
                 trades = session.exec(statement).all()
 
             # Build closed trades from DB
-            closed = [TradeResponse(**trade.model_dump()) for trade in trades]
+            closed = [
+                TradeResponse(
+                    **{
+                        **trade.model_dump(),
+                        'entry_order_tags': tags_from_binance_order_type(trade.entry_order_type),
+                        'exit_order_tags': tags_from_binance_order_type(trade.exit_order_type),
+                    }
+                )
+                for trade in trades
+            ]
 
         # Compute open positions and unrealized PnL
         try:
@@ -182,13 +302,22 @@ async def get_trade_history(symbol: str = "BTC/USDT", logic: str = "fifo", sort_
 
         # Fetch pending orders from the order book
         try:
-            open_orders = await exchange_manager.fetch_open_orders(symbol)
+            raw_open_orders = await exchange_manager.fetch_open_orders(symbol)
+            
+            # Formally map CCXT orders and Binance Algo Responses using our SOLID factories
+            open_orders = []
+            for raw in raw_open_orders:
+                mapper = get_order_mapper(raw)
+                open_orders.append(mapper.map(raw))
         except Exception:
             open_orders = []
 
         unrealized = []
-        # We will keep track of which open orders were matched as TP/SL so we don't display them double
-        matched_order_ids = set()
+        matched_order_ids: set = set()
+
+        conditional_by_ts = aggregate_conditional_orders_by_create_time(
+            filter_conditional_algo_orders(open_orders)
+        )
 
         if open_positions:
             try:
@@ -213,29 +342,46 @@ async def get_trade_history(symbol: str = "BTC/USDT", logic: str = "fifo", sort_
                     entry_side=entry_side
                 )
 
-                # Correlate opposite open orders as TP/SL
-                tp_pnl_val = None
-                sl_pnl_val = None
-                
-                for order in open_orders:
-                    # An order is a closing order if it's the opposite side
-                    # and the position is open. We rough-match it by side.
-                    order_side = (order.get('side') or '').lower()
-                    if order_side and order_side != entry_side:
-                        info_dict = order.get('info', {})
-                        p_price = float(info_dict.get('stopPrice', 0)) if float(info_dict.get('stopPrice', 0)) > 0 else float(order.get('price') or 0.0)
-                        if p_price > 0:
-                            order_amount = float(order.get('amount') or entry_amount)
-                            # Calculation format matching PnL rules
-                            diff = (p_price - entry_price) if entry_side == 'buy' else (entry_price - p_price)
-                            potential_pnl = diff * order_amount
-                            
-                            # If it's profitable, it's a TP. If negative, SL.
-                            if potential_pnl > 0:
-                                tp_pnl_val = potential_pnl
-                            else:
-                                sl_pnl_val = potential_pnl
-                            matched_order_ids.add(order.get('id'))
+                tp_pnl_val: Optional[float] = None
+                sl_pnl_val: Optional[float] = None
+                cond_exit_info: Optional[ConditionalExitInfo] = None
+                linked_sorted: List[Any] = []
+
+                entry_ts_ms = int(op['entry_timestamp'])
+
+                if not op.get('is_orphan'):
+                    linked = cross_entry_timestamp_with_conditional_orders(
+                        entry_ts_ms, conditional_by_ts, entry_side
+                    )
+                    if linked:
+                        linked_sorted = sort_linked_orders_for_display(linked)
+                        for o in linked_sorted:
+                            matched_order_ids.add(str(getattr(o, 'id', '')))
+                        acc_tp: Optional[float] = None
+                        acc_sl: Optional[float] = None
+                        for o in linked_sorted:
+                            tpp, slp = compute_tp_sl_from_order(
+                                entry_side, entry_price, entry_amount, o
+                            )
+                            acc_tp, acc_sl = merge_tp_sl((acc_tp, acc_sl), (tpp, slp))
+                        tp_pnl_val, sl_pnl_val = acc_tp, acc_sl
+                        cond_exit_info = build_conditional_exit_info(linked_sorted[0])
+
+                legacy_exit_tags: List[str] = []
+                if cond_exit_info is None:
+                    tp_pnl_val, sl_pnl_val, legacy_exit_tags = apply_legacy_floating_tp_sl(
+                        entry_side,
+                        entry_price,
+                        entry_amount,
+                        open_orders,
+                        matched_order_ids,
+                    )
+
+                entry_tags = tags_from_binance_order_type(op.get('entry_order_type'))
+                if linked_sorted:
+                    exit_tags = merge_tag_lists([tags_from_open_order_response(o) for o in linked_sorted])
+                else:
+                    exit_tags = legacy_exit_tags if legacy_exit_tags else ["FLOATING"]
 
                 unrealized.append(TradeResponse(
                     id=0,
@@ -245,9 +391,7 @@ async def get_trade_history(symbol: str = "BTC/USDT", logic: str = "fifo", sort_
                     entry_amount=entry_amount,
                     entry_fee=entry_fee,
                     entry_datetime=op['entry_datetime'],
-                    # Use empty string instead of null to avoid frontend `.toUpperCase()` errors
                     exit_side='',
-                    # show current market price as provisional exit price for UI
                     exit_price=current_price if current_price else None,
                     exit_amount=None,
                     exit_fee=None,
@@ -257,26 +401,25 @@ async def get_trade_history(symbol: str = "BTC/USDT", logic: str = "fifo", sort_
                     duration_seconds=0,
                     created_at=op['entry_datetime'],
                     tp_pnl=tp_pnl_val,
-                    sl_pnl=sl_pnl_val
+                    sl_pnl=sl_pnl_val,
+                    conditional_exit=cond_exit_info,
+                    is_orphan=bool(op.get('is_orphan', False)),
+                    entry_order_tags=entry_tags,
+                    exit_order_tags=exit_tags,
                 ))
                 
         # Append unmatched open orders as standalone Pending Rows
         standalone_pending = []
         for order in open_orders:
-            if order.get('id') not in matched_order_ids:
-                info_dict = order.get('info', {})
-                p_price = float(info_dict.get('stopPrice', 0)) if float(info_dict.get('stopPrice', 0)) > 0 else float(order.get('price') or 0.0)
-                order_dt = datetime.fromtimestamp(order.get('timestamp', 0) / 1000) if order.get('timestamp') else datetime.utcnow()
-                
-                order_type = order.get('type', 'limit').upper()
+            if order.id not in matched_order_ids:
                 standalone_pending.append(TradeResponse(
                     id=0,
                     symbol=symbol,
-                    entry_side=(order.get('side') or 'buy').lower(),
-                    entry_price=p_price,
-                    entry_amount=float(order.get('amount') or 0.0),
+                    entry_side=(order.side or 'buy').lower(),
+                    entry_price=order.price,
+                    entry_amount=order.amount,
                     entry_fee=0.0,
-                    entry_datetime=order_dt,
+                    entry_datetime=order.datetime,
                     exit_side='',
                     exit_price=None,
                     exit_amount=None,
@@ -285,9 +428,11 @@ async def get_trade_history(symbol: str = "BTC/USDT", logic: str = "fifo", sort_
                     pnl_net=0.0,
                     pnl_percentage=0.0,
                     duration_seconds=0,
-                    created_at=order_dt,
+                    created_at=order.datetime,
                     is_pending=True,
-                    order_type=order_type
+                    order_type=order.type,
+                    entry_order_tags=tags_from_open_order_response(order),
+                    exit_order_tags=["PENDING"],
                 ))
 
         # Return combined trades processed by the Strategy Pattern formatter
@@ -390,10 +535,13 @@ async def sync_trades(symbol: str = "BTC/USDT", logic: str = "atomic_fifo"):
                     existing_trade_ids.add(trade_id_str)  # Prevent duplicates in same batch
             
             session.commit()
-        
+
+        await enrich_missing_fill_order_types(symbol)
+
         # Process fills into matched trades using selected strategy
         tracker = TradeTracker(symbol)
         trades_created = tracker.process_and_save_trades(strategy_name=logic)
+        sync_trade_order_metadata_from_fills(symbol, logic)
         
         return SyncResponse(
             success=True,
@@ -491,10 +639,13 @@ async def sync_historical_trades(symbol: str = "BTC/USDT", logic: str = "atomic_
                     existing_trade_ids.add(trade_id_str)
             
             session.commit()
-        
+
+        await enrich_missing_fill_order_types(symbol)
+
         tracker = TradeTracker(symbol)
         # Bug fix: pass the selected strategy so historical sync respects it
         trades_created = tracker.process_and_save_trades(strategy_name=logic)
+        sync_trade_order_metadata_from_fills(symbol, logic)
         
         # Calculate start range date strings for message
         start_date = datetime.fromtimestamp(start_time / 1000).strftime('%Y-%m-%d')
@@ -788,3 +939,49 @@ async def get_exchange_logs(limit: int = 100, offset: int = 0):
             return list(results)
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Error fetching exchange logs: {str(e)}")
+
+@router.get("/debug/algo-orders")
+async def debug_algo_orders(symbol: Optional[str] = None):
+    """Debug endpoint to fetch raw algo orders response directly from SAPI."""
+    try:
+        if symbol:
+            try:
+                symbol = await exchange_manager.normalize_symbol(symbol)
+            except Exception:
+                pass
+                
+        exchange = await exchange_manager.get_exchange()
+        params = {}
+        if symbol:
+            params['symbol'] = symbol.replace('/', '')
+        
+        # Raw request execution
+        try:
+            res = await exchange.sapiGetAlgoFuturesOpenOrders(params)
+            return {"status": "success", "data": res}
+        except Exception as e:
+            # Fallback en caso de que SAPI no funcione y queramos usar request
+            try:
+                res = await exchange.request('algo/futures/openOrders', 'sapi', 'GET', params)
+                return {"status": "success_fallback", "data": res}
+            except Exception as e2:
+                return {"status": "error", "message": str(e), "fallback_error": str(e2)}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Critical error in debug endpoint: {str(e)}")
+
+class PostmanRequest(BaseModel):
+    path: str
+    api: str = "fapiPrivate"
+    method: str = "GET"
+    params: dict = {}
+
+@router.post("/debug/postman")
+async def debug_postman(payload: PostmanRequest):
+    """Generic Postman-like proxy to test raw properties matching CCXT logic."""
+    try:
+        exchange = await exchange_manager.get_exchange()
+        # Direct bypass proxy through CCXT wrapper
+        res = await exchange.request(payload.path, payload.api, payload.method, payload.params)
+        return {"status": "success", "data": res}
+    except Exception as e:
+        return {"status": "error", "message": str(e)}

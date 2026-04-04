@@ -27,6 +27,8 @@ class Fill(SQLModel, table=True):
     timestamp: int  # Unix timestamp in milliseconds
     datetime: datetime
     order_id: Optional[str] = None
+    # Tipo nativo Binance (p.ej. MARKET, LIMIT) desde fetch_order(orderId)
+    order_type: Optional[str] = None
     created_at: datetime = Field(default_factory=datetime.utcnow)
 
 
@@ -55,6 +57,11 @@ class Trade(SQLModel, table=True):
     pnl_percentage: float
     duration_seconds: int
     created_at: datetime = Field(default_factory=datetime.utcnow)
+    # Metadatos de órdenes (precisión desde fills + Binance)
+    entry_order_id: Optional[str] = None
+    exit_order_id: Optional[str] = None
+    entry_order_type: Optional[str] = None
+    exit_order_type: Optional[str] = None
 
 
 class BotSignal(SQLModel, table=True):
@@ -148,6 +155,22 @@ def create_db_and_tables():
         # Add columns if they are missing
         if "trade_amount" not in config_columns:
             cursor.execute("ALTER TABLE bot_config ADD COLUMN trade_amount FLOAT DEFAULT 5.01;")
+
+        cursor.execute("PRAGMA table_info(fills);")
+        fill_columns = [col[1] for col in cursor.fetchall()]
+        if "order_type" not in fill_columns:
+            cursor.execute("ALTER TABLE fills ADD COLUMN order_type TEXT;")
+
+        cursor.execute("PRAGMA table_info(trades);")
+        trade_columns = [col[1] for col in cursor.fetchall()]
+        for col_name, ddl in (
+            ("entry_order_id", "ALTER TABLE trades ADD COLUMN entry_order_id TEXT;"),
+            ("exit_order_id", "ALTER TABLE trades ADD COLUMN exit_order_id TEXT;"),
+            ("entry_order_type", "ALTER TABLE trades ADD COLUMN entry_order_type TEXT;"),
+            ("exit_order_type", "ALTER TABLE trades ADD COLUMN exit_order_type TEXT;"),
+        ):
+            if col_name not in trade_columns:
+                cursor.execute(ddl)
             
         conn.commit()
         conn.close()

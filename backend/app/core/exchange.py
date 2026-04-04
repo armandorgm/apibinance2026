@@ -89,6 +89,28 @@ class ExchangeManager:
             ExchangeLogger.log_request("fetch_my_trades", {"symbol": symbol, "since": since, "limit": limit, "params": params}, error_message=str(e))
             raise Exception(f"Error fetching trades from Binance: {str(e)}")
     
+    async def fetch_order_raw(self, symbol: str, order_id: str) -> Optional[Dict[str, Any]]:
+        """Obtiene la orden por id (futures) para leer el tipo nativo Binance."""
+        if not order_id:
+            return None
+        await self._rate_limit()
+        exchange = await self.get_exchange()
+        try:
+            o = await exchange.fetch_order(order_id, symbol)
+            ExchangeLogger.log_request(
+                "fetch_order",
+                {"symbol": symbol, "orderId": order_id},
+                response=o,
+            )
+            return o if isinstance(o, dict) else None
+        except Exception as e:
+            ExchangeLogger.log_request(
+                "fetch_order",
+                {"symbol": symbol, "orderId": order_id},
+                error_message=str(e),
+            )
+            return None
+
     async def fetch_balance(self) -> Dict[str, Any]:
         """Fetch account balance (Async)."""
         await self._rate_limit()
@@ -157,65 +179,134 @@ class ExchangeManager:
             ExchangeLogger.log_request("get_open_positions", {"symbol": symbol}, error_message=str(e))
             raise e
 
+    async def _fapi_conditional_open_orders(
+        self, exchange: ccxt.binance, symbol: Optional[str]
+    ) -> List[Dict[str, Any]]:
+        """
+        USD-M / USDC-M conditional TP/SL/trailing (Binance GET /fapi/v1/openAlgoOrders).
+        Returns raw dicts with orderType, side, triggerPrice, algoType CONDITIONAL, etc.
+        """
+        params: Dict[str, Any] = {'algoType': 'CONDITIONAL'}
+        if symbol:
+            await exchange.load_markets()
+            params['symbol'] = exchange.market(symbol)['id']
+        try:
+            res = await exchange.fapiPrivateGetOpenAlgoOrders(params)
+        except Exception as e1:
+            try:
+                res = await exchange.request('openAlgoOrders', 'fapiPrivate', 'GET', params)
+            except Exception as e2:
+                ExchangeLogger.log_request(
+                    'fapiPrivateGetOpenAlgoOrders',
+                    params,
+                    error_message=f'{e1} | fallback: {e2}',
+                )
+                return []
+        ExchangeLogger.log_request('fapiPrivateGetOpenAlgoOrders', params, response=res)
+        if isinstance(res, list):
+            return res
+        if isinstance(res, dict) and 'orders' in res:
+            return res['orders'] if isinstance(res['orders'], list) else []
+        return []
+
+    async def _sapi_algo_futures_open_orders(
+        self, exchange: ccxt.binance, symbol: Optional[str]
+    ) -> List[Dict[str, Any]]:
+        """SAPI algo/futures open orders (e.g. VP) — separate product from FAPI CONDITIONAL."""
+        params: Dict[str, Any] = {}
+        if symbol:
+            params['symbol'] = symbol.replace('/', '').split(':')[0]
+        try:
+            res = await exchange.sapiGetAlgoFuturesOpenOrders(params)
+            ExchangeLogger.log_request('sapiGetAlgoFuturesOpenOrders', params, response=res)
+        except Exception as e:
+            ExchangeLogger.log_request('sapiGetAlgoFuturesOpenOrders', params, error_message=str(e))
+            return []
+        if isinstance(res, list):
+            return res
+        if isinstance(res, dict):
+            orders = res.get('orders', [])
+            return orders if isinstance(orders, list) else []
+        return []
+
     async def fetch_open_orders(self, symbol: Optional[str] = None) -> List[Dict[str, Any]]:
         """
         Fetch current open orders from Binance Futures (Async).
-        Unifies Standard Service (v1/openOrders) and Algo Service (v1/openAlgoOrders).
+        Merges:
+        - v1/openOrders (libro estándar vía CCXT)
+        - v1/openAlgoOrders?algoType=CONDITIONAL (TP/SL/trailing — incluye TAKE_PROFIT_MARKET con side SELL)
+        - sapi/v1/algo/futures/openOrders (otros algoritmos p. ej. VP, sin solaparse con CONDITIONAL)
         """
         await self._rate_limit()
         exchange = await self.get_exchange()
-        
-        # We fetch both in parallel for efficiency
-        import asyncio
-        import json
-        
+
         try:
-            # 1. Standard Orders via CCXT standard method
             t_std = exchange.fetch_open_orders(symbol)
-            
-            # 2. Algo Orders (Conditional TP/SL/Trailing)
-            # Binance Algo endpoint might not exist depending on the CCXT version or account type
-            t_algo = None
-            if hasattr(exchange, 'fapiPrivateGetOpenAlgoOrders'):
-                # Wrap it in an async function to make it awaitable like t_std
-                async def fetch_algo():
-                    return await exchange.fapiPrivateGetOpenAlgoOrders({'symbol': symbol.replace('/', '') if symbol else None})
-                t_algo = fetch_algo()
-            
-            # Awaits in parallel if both exist
-            if t_algo:
-                std_res, algo_res = await asyncio.gather(t_std, t_algo, return_exceptions=True)
-            else:
-                std_res = await t_std
-                algo_res = []
-            
-            # Process standard results
+
+            async def safe_conditional():
+                if getattr(exchange, 'id', '') != 'binance':
+                    return []
+                return await self._fapi_conditional_open_orders(exchange, symbol)
+
+            async def safe_sapi_algo():
+                if getattr(exchange, 'id', '') != 'binance':
+                    return []
+                return await self._sapi_algo_futures_open_orders(exchange, symbol)
+
+            std_res, fapi_algo_res, sapi_algo_res = await asyncio.gather(
+                t_std, safe_conditional(), safe_sapi_algo(), return_exceptions=True
+            )
+
             standard_orders = std_res if not isinstance(std_res, Exception) else []
             if isinstance(std_res, Exception):
-                print(f"[EXCHANGE] Error fetching standard orders: {std_res}")
-                # Re-raise if it's the primary channel and the only one we depend on
+                print(f'[EXCHANGE] Error fetching standard orders: {std_res}')
                 raise std_res
-                
-            # Process algo results (Binance returns list of orders or object with 'orders' field)
-            algo_orders = []
-            if not isinstance(algo_res, Exception):
-                algo_orders = algo_res if isinstance(algo_res, list) else algo_res.get('orders', [])
-            else:
-                print(f"[EXCHANGE] Error fetching algo orders: {algo_res}")
 
-            # Return combined list for the API layer to normalize
-            # We tag them so the mapper knows the source
-            for o in standard_orders: o['_source'] = 'standard'
-            for o in algo_orders: o['_source'] = 'algo'
-            
-            combined = standard_orders + algo_orders
-            ExchangeLogger.log_request("fetch_open_orders", {"symbol": symbol}, response=combined)
+            fapi_algo: List[Dict[str, Any]] = (
+                fapi_algo_res if not isinstance(fapi_algo_res, Exception) else []
+            )
+            if isinstance(fapi_algo_res, Exception):
+                print(f'[EXCHANGE] Error fetching FAPI openAlgoOrders: {fapi_algo_res}')
+
+            sapi_algo: List[Dict[str, Any]] = (
+                sapi_algo_res if not isinstance(sapi_algo_res, Exception) else []
+            )
+            if isinstance(sapi_algo_res, Exception):
+                print(f'[EXCHANGE] Error fetching SAPI algo futures orders: {sapi_algo_res}')
+
+            for o in standard_orders:
+                o['_source'] = 'standard'
+            for o in fapi_algo:
+                o['_source'] = 'algo'
+            for o in sapi_algo:
+                o['_source'] = 'algo'
+
+            seen_ids = set()
+            combined: List[Dict[str, Any]] = []
+
+            def add_unique(order: Dict[str, Any]) -> None:
+                oid = order.get('algoId') or order.get('orderId') or order.get('id')
+                sym = order.get('symbol', '')
+                key = (sym, str(oid)) if oid else None
+                if key:
+                    if key in seen_ids:
+                        return
+                    seen_ids.add(key)
+                combined.append(order)
+
+            for o in standard_orders:
+                add_unique(o)
+            for o in fapi_algo:
+                add_unique(o)
+            for o in sapi_algo:
+                add_unique(o)
+
+            ExchangeLogger.log_request('fetch_open_orders', {'symbol': symbol}, response=combined)
             return combined
-            
+
         except Exception as e:
-            print(f"[EXCHANGE] Critical error in fetch_open_orders: {e}")
-            ExchangeLogger.log_request("fetch_open_orders", {"symbol": symbol}, error_message=str(e))
-            # If all fails, return empty to not crash the UI
+            print(f'[EXCHANGE] Critical error in fetch_open_orders: {e}')
+            ExchangeLogger.log_request('fetch_open_orders', {'symbol': symbol}, error_message=str(e))
             return []
 
 
