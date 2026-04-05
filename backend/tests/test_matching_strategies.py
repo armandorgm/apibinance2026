@@ -13,9 +13,9 @@ from app.db.database import Fill
 
 BASE_TS = 1700000000000  # arbitrary base timestamp in ms
 
-def make_fill(tid, side, amount, price, ts_offset, order_id=None):
+def make_fill(tid, side, amount, price, ts_offset, order_id=None, **kwargs):
     ts = BASE_TS + ts_offset
-    return Fill(
+    fill = Fill(
         trade_id=tid,
         symbol="TEST/USDT",
         side=side,
@@ -28,6 +28,10 @@ def make_fill(tid, side, amount, price, ts_offset, order_id=None):
         datetime=datetime.fromtimestamp(ts / 1000),
         order_id=order_id or tid,
     )
+    # Extra metadata (not saved to DB in tests)
+    for k, v in kwargs.items():
+        object.__setattr__(fill, k, v)
+    return fill
 
 
 class TestExactMatch:
@@ -145,3 +149,31 @@ class TestOpenPositions:
         assert len(open_buys) == 1
         # LIFO consumed b2 (110), so b1 (90) remains open
         assert open_buys[0]['entry_price'] == 90.0, "LIFO should leave buy@90 open"
+
+
+class TestOriginCentricRules:
+    """Escenario: Órdenes que NO pueden ser entrada (es decir, AlgoOrders)."""
+
+    def test_algo_order_cannot_be_entry(self):
+        tracker = TradeTracker("TEST/USDT")
+        fills = [
+            # Una compra que es ALGO (Stop Loss Inverso o similar) o simplemente marcada como no-entrada
+            make_fill("b1", "buy",  1.0, 100.0,    0, "buy_algo", can_be_entry=False, originator="AUTO_ALGO"),
+            make_fill("s1", "sell", 1.0, 120.0, 1000, "sell_1"),
+        ]
+        
+        # Ninguna estrategia debería matchear b1 con s1 porque b1 no es entrada válida
+        for strategy in ["fifo", "lifo", "atomic_fifo"]:
+            trades = tracker.match_trades(fills, strategy)
+            assert len(trades) == 0, f"[{strategy}] Algo order should NOT be an entry candidate"
+
+    def test_manual_order_can_be_entry(self):
+        tracker = TradeTracker("TEST/USDT")
+        fills = [
+            make_fill("b1", "buy",  1.0, 100.0,    0, "buy_manual", can_be_entry=True, originator="MANUAL"),
+            make_fill("s1", "sell", 1.0, 120.0, 1000, "sell_1"),
+        ]
+        
+        trades = tracker.match_trades(fills, "fifo")
+        assert len(trades) == 1, "Manual order SHOULD be an entry candidate"
+        assert trades[0]['originator'] == "MANUAL"

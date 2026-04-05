@@ -61,11 +61,15 @@ def cross_entry_timestamp_with_conditional_orders(
     conditional_by_create_time: Dict[int, List[Any]],
     entry_side: str,
 ) -> List[Any]:
-    """
-    Cruce estricto: mismo createTime que el timestamp de entrada, y la orden debe cerrar la posición.
-    """
-    candidates = conditional_by_create_time.get(int(entry_timestamp_ms), [])
-    return [o for o in candidates if order_closes_entry_position(entry_side, o)]
+    """Cruce exacto por timestamp. Si falla, hace fuzzy match (+/- 5 segundos)."""
+    linked = conditional_by_create_time.get(int(entry_timestamp_ms), [])
+    if not linked:
+        # Fuzzy match (5000ms window)
+        for cand_ts, cand_orders in conditional_by_create_time.items():
+            if abs(cand_ts - entry_timestamp_ms) <= 5000:
+                linked = cand_orders
+                break
+    return [o for o in linked if order_closes_entry_position(entry_side, o)]
 
 
 def sort_linked_orders_for_display(orders: Sequence[Any]) -> List[Any]:
@@ -138,7 +142,7 @@ def apply_legacy_floating_tp_sl(
     entry_amount: float,
     open_orders: Sequence[Any],
     matched_order_ids: set,
-) -> Tuple[Optional[float], Optional[float], List[str]]:
+) -> Tuple[Optional[float], Optional[float], List[str], List[Any]]:
     """
     Heurística previa: órdenes opuestas con precio > 0; asigna TP/SL por signo del potencial.
     Omite ids ya emparejados por timestamp.
@@ -147,6 +151,7 @@ def apply_legacy_floating_tp_sl(
     sl_val: Optional[float] = None
     last_tp_tags: List[str] = []
     last_sl_tags: List[str] = []
+    matched_legacy_orders: List[Any] = []
     es = (entry_side or "").lower()
 
     for order in open_orders:
@@ -171,5 +176,7 @@ def apply_legacy_floating_tp_sl(
             sl_val = potential
             last_sl_tags = tags_from_open_order_response(order)
         matched_order_ids.add(oid)
+        matched_legacy_orders.append(order)
+        
     exit_tags = merge_tag_lists([last_tp_tags, last_sl_tags])
-    return tp_val, sl_val, exit_tags
+    return tp_val, sl_val, exit_tags, matched_legacy_orders

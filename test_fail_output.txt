@@ -1,0 +1,27 @@
+============================= test session starts =============================
+platform win32 -- Python 3.13.12, pytest-9.0.2, pluggy-1.6.0
+rootdir: f:\apibinance2026
+configfile: pytest.ini
+plugins: anyio-3.7.1
+collected 7 items / 1 error
+
+=================================== ERRORS ====================================
+_________ ERROR collecting backend/tests/test_matching_strategies.py __________
+backend\tests\test_matching_strategies.py:11: in <module>
+    from app.services.tracker_logic import TradeTracker, FIFOMatchStrategy, LIFOMatchStrategy, AtomicMatchStrategy
+backend\app\services\tracker_logic.py:13: in <module>
+    class MatchStrategy(ABC):
+backend\app\services\tracker_logic.py:16: in MatchStrategy
+    def match(self, tracker: 'TradeTracker', fills: List[Fill], session: Optional[Session] = None) -> List[Dict[str, Any]]:
+                                                                         ^^^^^^^^
+E   NameError: name 'Optional' is not defined
+============================== warnings summary ===============================
+backend\app\core\config.py:8
+  f:\apibinance2026\backend\app\core\config.py:8: PydanticDeprecatedSince20: Support for class-based `config` is deprecated, use ConfigDict instead. Deprecated in Pydantic V2.0 to be removed in V3.0. See Pydantic V2 Migration Guide at https://errors.pydantic.dev/2.12/migration/
+    class Settings(BaseSettings):
+
+-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
+=========================== short test summary info ===========================
+ERROR backend/tests/test_matching_strategies.py - NameError: name 'Optional' ...
+!!!!!!!!!!!!!!!!!!! Interrupted: 1 error during collection !!!!!!!!!!!!!!!!!!!!
+========================= 1 warning, 1 error in 1.03s =========================

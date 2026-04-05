@@ -8,6 +8,38 @@ from app.core.config import settings
 from contextlib import contextmanager
 
 
+from contextlib import contextmanager
+from enum import Enum
+
+class Originator(str, Enum):
+    BOT = "BOT_APP"
+    MANUAL = "MANUAL"
+    AUTO = "AUTO_ALGO"
+
+class OrderSource(str, Enum):
+    STANDARD = "STANDARD"
+    ALGO = "ALGO"
+
+class Order(SQLModel, table=True):
+    """
+    Unified Order model (SOLID).
+    Stores intent and originator metadata.
+    """
+    __tablename__ = "orders"
+    
+    id: str = Field(primary_key=True)  # Binance orderId or algoId
+    symbol: str = Field(index=True)
+    side: str  # 'buy' or 'sell'
+    amount: float
+    price: float
+    status: str
+    datetime: datetime
+    originator: Originator
+    source: OrderSource
+    can_be_entry: bool = True
+    is_bot_logged: bool = False
+    created_at: datetime = Field(default_factory=datetime.utcnow)
+
 class Fill(SQLModel, table=True):
     """
     Raw execution (fill) from Binance.
@@ -26,9 +58,8 @@ class Fill(SQLModel, table=True):
     fee_currency: str
     timestamp: int  # Unix timestamp in milliseconds
     datetime: datetime
-    order_id: Optional[str] = None
-    # Tipo nativo Binance (p.ej. MARKET, LIMIT) desde fetch_order(orderId)
-    order_type: Optional[str] = None
+    order_id: str = Field(foreign_key="orders.id", index=True) # Mandatory FK
+    order_type: Optional[str] = None # Standard type (LIMIT/MARKET)
     created_at: datetime = Field(default_factory=datetime.utcnow)
 
 
@@ -124,59 +155,10 @@ engine = create_engine(
     echo=False
 )
 
-
 def create_db_and_tables():
-    """Create database tables."""
+    """Create database tables from scratch (Fresh Start)."""
+    # Simply create tables. No legacy migrations needed since DB is new.
     SQLModel.metadata.create_all(engine)
-    
-    # Simple migration for bot_signals (adds new columns if they don't exist)
-    import sqlite3
-    from app.core.config import settings
-    # Extract path from sqlite:///./path.db
-    db_name = settings.DATABASE_URL.replace("sqlite:///", "").replace("./", "")
-    try:
-        conn = sqlite3.connect(db_name)
-        cursor = conn.cursor()
-        
-        # Check current columns in bot_signals
-        cursor.execute("PRAGMA table_info(bot_signals);")
-        columns = [col[1] for col in cursor.fetchall()]
-        
-        # Add columns if they are missing
-        if "exchange_request" not in columns:
-            cursor.execute("ALTER TABLE bot_signals ADD COLUMN exchange_request TEXT;")
-        if "exchange_response" not in columns:
-            cursor.execute("ALTER TABLE bot_signals ADD COLUMN exchange_response TEXT;")
-            
-        # Check current columns in bot_config
-        cursor.execute("PRAGMA table_info(bot_config);")
-        config_columns = [col[1] for col in cursor.fetchall()]
-        
-        # Add columns if they are missing
-        if "trade_amount" not in config_columns:
-            cursor.execute("ALTER TABLE bot_config ADD COLUMN trade_amount FLOAT DEFAULT 5.01;")
-
-        cursor.execute("PRAGMA table_info(fills);")
-        fill_columns = [col[1] for col in cursor.fetchall()]
-        if "order_type" not in fill_columns:
-            cursor.execute("ALTER TABLE fills ADD COLUMN order_type TEXT;")
-
-        cursor.execute("PRAGMA table_info(trades);")
-        trade_columns = [col[1] for col in cursor.fetchall()]
-        for col_name, ddl in (
-            ("entry_order_id", "ALTER TABLE trades ADD COLUMN entry_order_id TEXT;"),
-            ("exit_order_id", "ALTER TABLE trades ADD COLUMN exit_order_id TEXT;"),
-            ("entry_order_type", "ALTER TABLE trades ADD COLUMN entry_order_type TEXT;"),
-            ("exit_order_type", "ALTER TABLE trades ADD COLUMN exit_order_type TEXT;"),
-        ):
-            if col_name not in trade_columns:
-                cursor.execute(ddl)
-            
-        conn.commit()
-        conn.close()
-        print("[DB] Applied migrations successfully")
-    except Exception as e:
-        print(f"[DB] Migration check skipped or failed: {e}")
     
     # Initialize default bot config if none exists
     with Session(engine) as session:
@@ -185,12 +167,15 @@ def create_db_and_tables():
         if not config:
             print("[DB] Initializing default BotConfig...")
             new_config = BotConfig(
-                symbol="BTC/USDT",
+                symbol="1000PEPEUSDC", # Updated default per user request
                 interval=60,
-                is_enabled=False
+                is_enabled=False,
+                trade_amount=5.01
             )
             session.add(new_config)
             session.commit()
+    print("[DB] New schema created successfully")
+
 
 
 @contextmanager

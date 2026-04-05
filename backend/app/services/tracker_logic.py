@@ -2,9 +2,9 @@
 Core business logic for FIFO trade matching and PnL calculation.
 This is the heart of the system - matches buys and sells using FIFO algorithm.
 """
-from typing import List, Dict, Any, Tuple
-from app.db.database import Fill, Trade, get_session_direct
-from sqlmodel import select
+from typing import List, Dict, Any, Tuple, Set, Optional
+from app.db.database import Fill, Trade, Order, get_session_direct
+from sqlmodel import select, Session
 from collections import deque
 
 
@@ -13,7 +13,7 @@ from abc import ABC, abstractmethod
 class MatchStrategy(ABC):
     """Base interface for trade matching strategies."""
     @abstractmethod
-    def match(self, tracker: 'TradeTracker', fills: List[Fill]) -> List[Dict[str, Any]]:
+    def match(self, tracker: 'TradeTracker', fills: List[Fill], session: Optional[Session] = None) -> List[Dict[str, Any]]:
         pass
 
 class AtomicMatchStrategy(MatchStrategy):
@@ -24,8 +24,8 @@ class AtomicMatchStrategy(MatchStrategy):
     def __init__(self, is_fifo: bool = True):
         self.is_fifo = is_fifo
 
-    def match(self, tracker: 'TradeTracker', fills: List[Fill]) -> List[Dict[str, Any]]:
-        grouped_orders = tracker._group_fills_by_order(fills)
+    def match(self, tracker: 'TradeTracker', fills: List[Fill], session: Optional[Session] = None) -> List[Dict[str, Any]]:
+        grouped_orders = tracker._group_fills_by_order(fills, session=session)
         buys = [o for o in grouped_orders if o['side'] == 'buy']
         sells = [o for o in grouped_orders if o['side'] == 'sell']
         
@@ -36,6 +36,8 @@ class AtomicMatchStrategy(MatchStrategy):
             candidates = []
             for i, buy in enumerate(buys):
                 if i in used_buys:
+                    continue
+                if not buy.get('can_be_entry', True):
                     continue
                 if buy['timestamp'] >= sell['timestamp']:
                     continue
@@ -64,8 +66,8 @@ class FIFOMatchStrategy(MatchStrategy):
     Standard FIFO (First-In-First-Out). 
     Matches earliest buys first, supporting partial fills.
     """
-    def match(self, tracker: 'TradeTracker', fills: List[Fill]) -> List[Dict[str, Any]]:
-        grouped_orders = tracker._group_fills_by_order(fills)
+    def match(self, tracker: 'TradeTracker', fills: List[Fill], session: Optional[Session] = None) -> List[Dict[str, Any]]:
+        grouped_orders = tracker._group_fills_by_order(fills, session=session)
         # We need a copy of buys that we can "consume"
         buys = [dict(o) for o in grouped_orders if o['side'] == 'buy']
         sells = [dict(o) for o in grouped_orders if o['side'] == 'sell']
@@ -78,7 +80,7 @@ class FIFOMatchStrategy(MatchStrategy):
             for buy in buys:
                 if remaining_sell_qty <= 0:
                     break
-                if buy['amount'] <= 0 or buy['timestamp'] >= sell['timestamp']:
+                if buy['amount'] <= 0 or buy['timestamp'] >= sell['timestamp'] or not buy.get('can_be_entry', True):
                     continue
                 
                 match_qty = min(buy['amount'], remaining_sell_qty)
@@ -106,8 +108,8 @@ class LIFOMatchStrategy(MatchStrategy):
     Standard LIFO (Last-In-First-Out).
     Matches latest buys first, supporting partial fills.
     """
-    def match(self, tracker: 'TradeTracker', fills: List[Fill]) -> List[Dict[str, Any]]:
-        grouped_orders = tracker._group_fills_by_order(fills)
+    def match(self, tracker: 'TradeTracker', fills: List[Fill], session: Optional[Session] = None) -> List[Dict[str, Any]]:
+        grouped_orders = tracker._group_fills_by_order(fills, session=session)
         buys = [dict(o) for o in grouped_orders if o['side'] == 'buy']
         sells = [dict(o) for o in grouped_orders if o['side'] == 'sell']
         
@@ -117,7 +119,7 @@ class LIFOMatchStrategy(MatchStrategy):
             remaining_sell_qty = sell['amount']
             # Sort buys by timestamp DESC for LIFO
             candidate_buys = sorted(
-                [b for b in buys if b['timestamp'] < sell['timestamp'] and b['amount'] > 0],
+                [b for b in buys if b['timestamp'] < sell['timestamp'] and b['amount'] > 0 and b.get('can_be_entry', True)],
                 key=lambda x: x['timestamp'], 
                 reverse=True
             )
@@ -182,7 +184,7 @@ class TradeTracker:
         
         return net_pnl, pnl_percentage
 
-    def _group_fills_by_order(self, fills: List[Fill]) -> List[Dict[str, Any]]:
+    def _group_fills_by_order(self, fills: List[Fill], session: Optional[Session] = None) -> List[Dict[str, Any]]:
         """
         Group individual fills by their order_id to reconstruct full orders.
         """
@@ -202,11 +204,20 @@ class TradeTracker:
                     'datetime': fill.datetime,
                     'fill_count': 0,
                     'order_type': None,
+                    'can_be_entry': True,
+                    'originator': 'UNKNOWN'
                 }
             
             o = orders[oid]
+            # Try to enrich with data from orders table if available
+            # Note: In a real sync, we should fetch all relevant orders beforehand for performance
             if getattr(fill, "order_type", None) and o.get("order_type") is None:
                 o["order_type"] = fill.order_type
+            if hasattr(fill, "can_be_entry"):
+                o["can_be_entry"] = fill.can_be_entry
+            if hasattr(fill, "originator"):
+                o["originator"] = fill.originator
+                
             o['amount'] += fill.amount
             o['cost'] += fill.cost
             o['fee'] += fill.fee
@@ -221,7 +232,38 @@ class TradeTracker:
             if fill.timestamp < o['timestamp']:
                 o['timestamp'] = fill.timestamp
                 o['datetime'] = fill.datetime
-        
+
+        # Enrichment step: Fetch metadata from the 'orders' table for all gathered IDs
+        if orders:
+            try:
+                # If no session is provided, try to get a direct one, but handle failures (e.g., in unit tests)
+                inner_session = session
+                should_close = False
+                if inner_session is None:
+                    try:
+                        inner_session = get_session_direct()
+                        should_close = True
+                    except Exception:
+                        # In pure unit tests, get_session_direct() might fail or tables might not exist
+                        inner_session = None
+
+                if inner_session:
+                    order_ids = list(orders.keys())
+                    statement = select(Order).where(Order.id.in_(order_ids))
+                    db_orders = inner_session.exec(statement).all()
+                    for db_o in db_orders:
+                        if db_o.id in orders:
+                            orders[db_o.id]['can_be_entry'] = db_o.can_be_entry
+                            orders[db_o.id]['originator'] = db_o.originator
+                            if db_o.source == "ALGO":
+                                orders[db_o.id]['order_type'] = "ALGO"
+                    
+                    if should_close:
+                        inner_session.close()
+            except Exception:
+                # Silently fail enrichment in case of DB issues (common in logic-only tests)
+                pass
+
         return sorted(orders.values(), key=lambda x: x['timestamp'])
 
     def _format_trade_data(self, buy: Dict, sell: Dict, pnl_data: Tuple[float, float], amount: float = 0.0) -> Dict[str, Any]:
@@ -249,9 +291,11 @@ class TradeTracker:
             'exit_order_id': str(sell.get('order_id') or ''),
             'entry_order_type': buy.get('order_type'),
             'exit_order_type': sell.get('order_type'),
+            'originator': buy.get('originator', 'MANUAL'),
+            'can_be_entry': buy.get('can_be_entry', True),
         }
 
-    def match_trades(self, fills: List[Fill], strategy_name: str = "atomic_fifo") -> List[Dict[str, Any]]:
+    def match_trades(self, fills: List[Fill], strategy_name: str = "atomic_fifo", session: Optional[Session] = None) -> List[Dict[str, Any]]:
         """
         Main entry point for matching trades using a named strategy.
         """
@@ -263,7 +307,7 @@ class TradeTracker:
         }
         
         strategy = strategies.get(strategy_name.lower(), strategies["atomic_fifo"])
-        return strategy.match(self, fills)
+        return strategy.match(self, fills, session=session)
 
     def match_trades_fifo(self, fills: List[Fill]) -> List[Dict[str, Any]]:
         """Legacy support for FIFO call, delegates to strategy."""
@@ -319,7 +363,7 @@ class TradeTracker:
             session.commit()
             return new_trades_count
 
-    def compute_open_positions(self, logic: str = "atomic_fifo", fills: List[Fill] = None) -> List[Dict[str, Any]]:
+    def compute_open_positions(self, logic: str = "atomic_fifo", fills: List[Fill] = None, session: Optional[Session] = None) -> List[Dict[str, Any]]:
         """
         Compute open (unmatched) positions using the same strategy as the main matching.
         Delegates to match_trades() to identify which orders were consumed, then
@@ -331,7 +375,7 @@ class TradeTracker:
                 fills = list(session.exec(statement).all())
 
         # Run the same strategy to find matched trades
-        matched_trades = self.match_trades(fills, logic)
+        matched_trades = self.match_trades(fills, logic, session=session)
 
         # Collect the entry/exit timestamps that were consumed in matches
         used_entry_timestamps = set()
@@ -341,7 +385,7 @@ class TradeTracker:
             used_exit_timestamps.add(t['exit_timestamp'])
 
         # Group fills into orders (same as matching does internally)
-        grouped_orders = self._group_fills_by_order(fills)
+        grouped_orders = self._group_fills_by_order(fills, session=session)
         buys = [o for o in grouped_orders if o['side'] == 'buy']
         sells = [o for o in grouped_orders if o['side'] == 'sell']
 
@@ -359,6 +403,7 @@ class TradeTracker:
                     'entry_timestamp': b['timestamp'],
                     'entry_datetime': b['datetime'],
                     'entry_order_type': b.get('order_type'),
+                    'originator': b.get('originator', 'MANUAL'),
                 })
 
         # Unmatched sells → orphan sells (closed before history or data gap)

@@ -29,6 +29,9 @@ export interface Trade {
   /** Tipos de orden (Binance) calculados en backend */
   entry_order_tags?: string[]
   exit_order_tags?: string[]
+  /** Origin Centric fields */
+  originator?: string
+  can_be_entry?: boolean
   /** Salida vinculada (CONDITIONAL) calculada en el backend; mismo createTime que la entrada */
   conditional_exit?: {
     algo_id: string
@@ -73,6 +76,10 @@ export interface Order {
   conditional_kind?: string | null
   closes_long?: boolean | null
   closes_short?: boolean | null
+  /** Origin Centric Fields */
+  originator: string
+  source: string
+  can_be_entry: boolean
 }
 
 export interface Stats {

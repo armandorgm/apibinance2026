@@ -2,15 +2,16 @@
 API routes for the Binance Futures Tracker.
 """
 from fastapi import APIRouter, HTTPException
-from typing import Any, List, Optional
+from typing import Any, List, Optional, Set
 from datetime import datetime
 from app.services.bot_service import bot_instance
 from sqlmodel import select, Session
 from pydantic import BaseModel, ConfigDict
-from app.db.database import Fill, Trade, BotSignal, BotConfig, ExchangeLog, get_session_direct, create_db_and_tables, engine
+from app.db.database import Fill, Trade, BotSignal, BotConfig, ExchangeLog, Order, get_session_direct, create_db_and_tables, engine, Originator, OrderSource
 from app.services.tracker_logic import TradeTracker
 from app.core.exchange import exchange_manager
 from app.services.history_formatter import TradeResponseFormatter, SortByEntryDateDesc, SortByEntryDateAsc, SortByPnLDesc
+from app.domain.orders.order_factory import OrderFactory
 from app.services.conditional_exit_link import (
     ConditionalExitInfo,
     aggregate_conditional_orders_by_create_time,
@@ -79,6 +80,9 @@ class TradeResponse(BaseModel):
     # Tipos de orden (entrada / salida) derivados de Binance con precisión
     entry_order_tags: List[str] = []
     exit_order_tags: List[str] = []
+    # Origin Centric Fields
+    originator: str = "MANUAL"
+    can_be_entry: bool = True
 
 class OrderResponse(BaseModel):
     """Response model for live open orders."""
@@ -100,6 +104,13 @@ class OrderResponse(BaseModel):
     order_type: Optional[str] = None
     tp_pnl: Optional[float] = None
     sl_pnl: Optional[float] = None
+    
+    # Origin Centric Fields
+    originator: str = "MANUAL"
+    source: str = "STANDARD"
+    can_be_entry: bool = True
+    tp_pnl: Optional[float] = None
+    sl_pnl: Optional[float] = None
     is_algo: bool = False
     # Futures conditional (openAlgoOrders): positionSide + clasificación TP/SL
     position_side: Optional[str] = None
@@ -110,118 +121,93 @@ class OrderResponse(BaseModel):
     # Binance FAPI createTime (ms); solo CONDITIONAL suele tenerlo para cruce con fills
     create_time_ms: Optional[int] = None
 
-# --- SOLID ORDER MAPPERS ---
+# --- Domain Logic Helpers ---
 
-class OrderMapper(ABC):
-    """Abstract Base Class for order mapping (SOLID)."""
-    @abstractmethod
-    def map(self, raw: dict) -> OrderResponse:
-        pass
-
-class StandardOrderMapper(OrderMapper):
-    """Maps Standard v1/openOrders to OrderResponse."""
-    def map(self, raw: dict) -> OrderResponse:
-        return OrderResponse(
-            id=str(raw.get('orderId') or raw.get('id', '')),
-            symbol=raw.get('symbol', ''),
-            type=raw.get('type', '').upper(),
-            side=(raw.get('side') or '').lower(),
-            price=float(raw.get('price', 0.0)),
-            amount=float(raw.get('origQty') or raw.get('amount', 0.0)),
-            filled=float(raw.get('executedQty') or raw.get('filled', 0.0)),
-            remaining=float(raw.get('remaining', 0.0)) if 'remaining' in raw else (float(raw.get('origQty', 0.0)) - float(raw.get('executedQty', 0.0))),
-            status=raw.get('status', '').upper(),
-            datetime=datetime.fromtimestamp(raw['timestamp'] / 1000) if raw.get('timestamp') else datetime.utcnow(),
-            is_algo=False,
-            is_pending=True,  # By definition if open
-            create_time_ms=int(raw['timestamp']) if raw.get('timestamp') is not None else None,
-        )
-
-def _algo_order_timestamp(raw: dict) -> datetime:
-    """Ms timestamps from FAPI openAlgoOrders or SAPI algo futures."""
-    for key in ('time', 'createTime', 'updateTime', 'bookTime', 'transactTime'):
-        v = raw.get(key)
-        if v is not None and v != 0:
-            try:
-                return datetime.utcfromtimestamp(int(v) / 1000)
-            except (TypeError, ValueError, OSError):
-                continue
-    return datetime.utcnow()
-
-
-def _conditional_kind_from_order_type(order_type: str) -> Optional[str]:
-    ot = (order_type or '').upper()
-    if 'TRAILING' in ot:
-        return 'trailing'
-    if 'TAKE_PROFIT' in ot:
-        return 'take_profit'
-    if 'STOP' in ot:
-        return 'stop_loss'
-    return None
-
-
-class AlgoOrderMapper(OrderMapper):
+async def ensure_orders_exist(symbol: str, order_ids: Set[str], session: Session):
     """
-    Maps Binance futures algo / conditional orders.
-    FAPI openAlgoOrders: orderType, triggerPrice, side (SELL = TP para long), quantity, algoType CONDITIONAL.
-    SAPI algo/futures: totalQty, bookTime, etc.
+    Ensure that all given order_ids exist in the 'orders' table.
+    Fetches missing orders from Binance and persists them.
     """
-    def map(self, raw: dict) -> OrderResponse:
-        order_type = (
-            raw.get('orderType') or raw.get('type') or 'ALGO'
-        )
-        order_type_u = str(order_type).upper()
-        side = (raw.get('side') or '').lower()
-        position_side = (raw.get('positionSide') or '') or None
+    if not order_ids:
+        return
+    
+    # Filter IDs that already exist in DB
+    existing_stmt = select(Order.id).where(Order.id.in_(list(order_ids)))
+    existing_ids = set(session.exec(existing_stmt).all())
+    missing_ids = order_ids - existing_ids
+    
+    if not missing_ids:
+        return
 
-        qty = float(raw.get('quantity') or raw.get('totalQty') or raw.get('amount') or 0.0)
-        filled = float(raw.get('executedQty') or 0.0)
-        remaining = qty - filled
-
-        trigger = raw.get('triggerPrice') or raw.get('stopPrice') or 0.0
-        price = float(trigger) if trigger not in (None, '') else 0.0
-
-        kind = _conditional_kind_from_order_type(order_type_u)
-        # Futuros reduce-only: SELL cierra / toma profit en posición LONG; BUY en SHORT.
-        closes_long = side == 'sell'
-        closes_short = side == 'buy'
-
-        create_time_ms = None
-        ct = raw.get('createTime')
-        if ct is not None and ct != 0:
+    print(f"[SYNC] Fetching {len(missing_ids)} missing orders for symbol {symbol}...")
+    
+    # Get recent bot signals for originator detection
+    stmt = select(BotSignal).where(
+        BotSignal.action_taken == "NEW_ORDER",
+        BotSignal.success == True
+    ).order_by(BotSignal.created_at.desc()).limit(500)
+    recent_signals = session.exec(stmt).all()
+    
+    logged_ids = set()
+    for sig in recent_signals:
+        if sig.exchange_response:
             try:
-                create_time_ms = int(ct)
-            except (TypeError, ValueError):
-                create_time_ms = None
+                res_data = json.loads(sig.exchange_response)
+                oid = res_data.get('orderId') or res_data.get('id') or res_data.get('algoId')
+                if oid:
+                    logged_ids.add(str(oid))
+            except:
+                pass
 
-        return OrderResponse(
-            id=str(raw.get('algoId', '')),
-            symbol=raw.get('symbol', ''),
-            type=order_type_u,
-            side=side,
-            price=price,
-            amount=qty,
-            filled=filled,
-            remaining=remaining,
-            status=str(raw.get('algoStatus') or raw.get('status') or 'NEW').upper(),
-            datetime=_algo_order_timestamp(raw),
-            is_algo=True,
-            is_pending=True,
-            order_type=order_type_u,
-            position_side=position_side.lower() if position_side else None,
-            algo_type=(raw.get('algoType') or None),
-            conditional_kind=kind,
-            closes_long=closes_long,
-            closes_short=closes_short,
-            create_time_ms=create_time_ms,
-        )
+    for oid in missing_ids:
+        try:
+            # 1. Try to fetch as Standard Order
+            raw = await exchange_manager.fetch_order_raw(symbol, oid)
+            if raw:
+                raw['_source'] = 'standard'
+                domain_order = OrderFactory.create(raw, logged_ids)
+                db_o = Order(
+                    id=domain_order.id,
+                    symbol=domain_order.symbol,
+                    side=domain_order.side,
+                    amount=domain_order.amount,
+                    price=domain_order.price,
+                    status=domain_order.status,
+                    datetime=domain_order.datetime,
+                    originator=domain_order.originator,
+                    source=domain_order.source,
+                    can_be_entry=domain_order.can_be_entry(),
+                    is_bot_logged=domain_order.is_bot_logged,
+                    order_type=getattr(domain_order, 'order_type', "LIMIT")
+                )
+                session.add(db_o)
+            else:
+                # 2. If not found, it might be an Algo order that was already filled
+                # (Binance Algo history is harder to fetch by ID individually)
+                # For now, create a placeholder if missing
+                print(f"[SYNC] Order {oid} not found on Binance Standard API. Creating placeholder.")
+                db_o = Order(
+                    id=oid,
+                    symbol=symbol,
+                    side="unknown",
+                    amount=0,
+                    price=0,
+                    status="FILLED",
+                    datetime=datetime.utcnow(),
+                    originator=Originator.MANUAL,
+                    source=OrderSource.STANDARD,
+                    can_be_entry=True,
+                    order_type="UNKNOWN"
+                )
+                session.add(db_o)
+            
+            # Flush to allow following operations in same session
+            session.flush() 
+        except Exception as e:
+            print(f"[SYNC] Error ensuring order {oid}: {e}")
 
-def get_order_mapper(raw: dict) -> OrderMapper:
-    """Factory to get the correct mapper based on source tag."""
-    if raw.get('_source') == 'algo':
-        return AlgoOrderMapper()
-    return StandardOrderMapper()
-
+    session.commit()
+# Legacy Mappers replaced by app.domain.orders.order_factory.OrderFactory
 # --- END SOLID ORDER MAPPERS ---
 
 
@@ -306,10 +292,53 @@ async def get_trade_history(symbol: str = "BTC/USDT", logic: str = "fifo", sort_
             
             # Formally map CCXT orders and Binance Algo Responses using our SOLID factories
             open_orders = []
+            
+            # Get recent signals for originator detection (similar to get_open_orders)
+            logged_order_ids = set()
+            with Session(engine) as session:
+                statement = select(BotSignal).where(
+                    BotSignal.action_taken == "NEW_ORDER",
+                    BotSignal.success == True
+                ).order_by(BotSignal.created_at.desc()).limit(100)
+                recent_signals = session.exec(statement).all()
+                for sig in recent_signals:
+                    if sig.exchange_response:
+                        try:
+                            res_data = json.loads(sig.exchange_response)
+                            oid = res_data.get('orderId') or res_data.get('id') or res_data.get('algoId')
+                            if oid:
+                                logged_order_ids.add(str(oid))
+                        except:
+                            pass
+
             for raw in raw_open_orders:
-                mapper = get_order_mapper(raw)
-                open_orders.append(mapper.map(raw))
-        except Exception:
+                domain_order = OrderFactory.create(raw, logged_order_ids)
+                open_orders.append(OrderResponse(
+                    id=domain_order.id,
+                    symbol=domain_order.symbol,
+                    type=raw.get('type') or raw.get('orderType', 'LIMIT'),
+                    side=domain_order.side,
+                    price=domain_order.price,
+                    amount=domain_order.amount,
+                    filled=float(raw.get('filled') or raw.get('executedQty', 0.0)),
+                    remaining=float(raw.get('remaining', 0.0)) if 'remaining' in raw else (domain_order.amount - float(raw.get('executedQty', 0.0))),
+                    status=domain_order.status,
+                    datetime=domain_order.datetime,
+                    originator=domain_order.originator.value,
+                    source=domain_order.source.value,
+                    can_be_entry=domain_order.can_be_entry(),
+                    is_bot_logged=domain_order.is_bot_logged,
+                    is_pending=True,
+                    order_type=getattr(domain_order, 'order_type', None),
+                    is_algo=domain_order.source == OrderSource.ALGO,
+                    create_time_ms=getattr(domain_order, 'create_time_ms', None),
+                    conditional_kind=getattr(domain_order, 'conditional_kind', None),
+                    closes_long=domain_order.side.lower() == 'sell',
+                    closes_short=domain_order.side.lower() == 'buy',
+                    algo_type="CONDITIONAL" if domain_order.source == OrderSource.ALGO else None 
+                ))
+        except Exception as e:
+            print(f"[API] Error enriching trade history with open orders: {e}")
             open_orders = []
 
         unrealized = []
@@ -369,13 +398,18 @@ async def get_trade_history(symbol: str = "BTC/USDT", logic: str = "fifo", sort_
 
                 legacy_exit_tags: List[str] = []
                 if cond_exit_info is None:
-                    tp_pnl_val, sl_pnl_val, legacy_exit_tags = apply_legacy_floating_tp_sl(
+                    tp_pnl_val, sl_pnl_val, legacy_exit_tags, matched_legacy_orders = apply_legacy_floating_tp_sl(
                         entry_side,
                         entry_price,
                         entry_amount,
                         open_orders,
                         matched_order_ids,
                     )
+                    if matched_legacy_orders and not cond_exit_info:
+                        for l_order in matched_legacy_orders:
+                            if getattr(l_order, "algo_type", None) == "CONDITIONAL" or getattr(l_order, "order_type", None) in ["TAKE_PROFIT_MARKET", "STOP_MARKET", "TRAILING_STOP_MARKET"]:
+                                cond_exit_info = build_conditional_exit_info(l_order)
+                                break
 
                 entry_tags = tags_from_binance_order_type(op.get('entry_order_type'))
                 if linked_sorted:
@@ -492,7 +526,12 @@ async def sync_trades(symbol: str = "BTC/USDT", logic: str = "atomic_fifo"):
         # Fetch new trades from Binance
         binance_trades = await exchange_manager.fetch_my_trades(symbol, since=since)
         
-        # Save new fills to database
+        # 1. Ensure all orders referenced by these trades exist in DB (FK requirement)
+        order_ids_to_fetch = {str(t.get('order', '')) for t in binance_trades if t.get('order')}
+        with get_session_direct() as session:
+            await ensure_orders_exist(symbol, order_ids_to_fetch, session)
+
+        # 2. Save new fills to database
         with get_session_direct() as session:
             existing_trade_ids = set()
             existing_statement = select(Fill.trade_id)
@@ -528,7 +567,7 @@ async def sync_trades(symbol: str = "BTC/USDT", logic: str = "atomic_fifo"):
                         fee_currency=fee_currency,
                         timestamp=trade_data['timestamp'],
                         datetime=datetime.fromtimestamp(trade_data['timestamp'] / 1000),
-                        order_id=str(trade_data.get('order', '')) if trade_data.get('order') else None
+                        order_id=str(trade_data.get('order', ''))
                     )
                     session.add(fill)
                     fills_added += 1
@@ -632,7 +671,7 @@ async def sync_historical_trades(symbol: str = "BTC/USDT", logic: str = "atomic_
                         fee_currency=fee_currency,
                         timestamp=trade_data['timestamp'],
                         datetime=datetime.fromtimestamp(trade_data['timestamp'] / 1000),
-                        order_id=str(trade_data.get('order', '')) if trade_data.get('order') else None
+                        order_id=str(trade_data.get('order', ''))
                     )
                     session.add(fill)
                     fills_added += 1
@@ -868,7 +907,7 @@ async def update_bot_config(config_update: BotConfigUpdate):
 
 @router.get("/orders/open", response_model=List[OrderResponse])
 async def get_open_orders(symbol: Optional[str] = None):
-    """Get live open orders unified from Standard and Algo services."""
+    """Get live open orders unified using Domain Layer (SOLID)."""
     try:
         if symbol:
             try:
@@ -879,12 +918,12 @@ async def get_open_orders(symbol: Optional[str] = None):
         # Fetch amalgamed results from exchange manager
         raw_orders = await exchange_manager.fetch_open_orders(symbol)
         
-        # Cross-reference with Bot Logs (Same as before but using normalized list)
+        # Get recent bot signals to cross-reference
         with Session(engine) as session:
             statement = select(BotSignal).where(
                 BotSignal.action_taken == "NEW_ORDER",
                 BotSignal.success == True
-            ).order_by(BotSignal.created_at.desc()).limit(100)
+            ).order_by(BotSignal.created_at.desc()).limit(200)
             recent_signals = session.exec(statement).all()
             
             logged_order_ids = set()
@@ -892,21 +931,68 @@ async def get_open_orders(symbol: Optional[str] = None):
                 if sig.exchange_response:
                     try:
                         res_data = json.loads(sig.exchange_response)
-                        order_id = res_data.get('id') or res_data.get('orderId') or res_data.get('algoId')
-                        if order_id:
-                            logged_order_ids.add(str(order_id))
+                        oid = res_data.get('orderId') or res_data.get('id') or res_data.get('algoId')
+                        if oid:
+                            logged_order_ids.add(str(oid))
                     except:
                         pass
 
         orders = []
-        for raw in raw_orders:
-            # Use SOLID mapper factory
-            mapper = get_order_mapper(raw)
-            normalized = mapper.map(raw)
-            
-            # Additional enrichment
-            normalized.is_bot_logged = normalized.id in logged_order_ids
-            orders.append(normalized)
+        with Session(engine) as session:
+            for raw in raw_orders:
+                # Use Domain Factory
+                domain_order = OrderFactory.create(raw, logged_order_ids)
+                
+                # Persistence (Upsert)
+                # First check if exists
+                stmt = select(Order).where(Order.id == domain_order.id)
+                db_order = session.exec(stmt).first()
+                if not db_order:
+                    db_order = Order(
+                        id=domain_order.id,
+                        symbol=domain_order.symbol,
+                        side=domain_order.side,
+                        amount=domain_order.amount,
+                        price=domain_order.price,
+                        status=domain_order.status,
+                        datetime=domain_order.datetime,
+                        originator=domain_order.originator,
+                        source=domain_order.source,
+                        can_be_entry=domain_order.can_be_entry(),
+                        is_bot_logged=domain_order.is_bot_logged,
+                        order_type=getattr(domain_order, 'order_type', "LIMIT")
+                    )
+                    session.add(db_order)
+                else:
+                    # Update status
+                    db_order.status = domain_order.status
+                    db_order.is_bot_logged = domain_order.is_bot_logged
+                
+                orders.append(OrderResponse(
+                    id=domain_order.id,
+                    symbol=domain_order.symbol,
+                    type=raw.get('type') or raw.get('orderType', 'LIMIT'),
+                    side=domain_order.side,
+                    price=domain_order.price,
+                    amount=domain_order.amount,
+                    filled=float(raw.get('filled') or raw.get('executedQty', 0.0)),
+                    remaining=float(raw.get('remaining', 0.0)) if 'remaining' in raw else (domain_order.amount - float(raw.get('executedQty', 0.0))),
+                    status=domain_order.status,
+                    datetime=domain_order.datetime,
+                    originator=domain_order.originator.value,
+                    source=domain_order.source.value,
+                    can_be_entry=domain_order.can_be_entry(),
+                    is_bot_logged=domain_order.is_bot_logged,
+                    is_pending=True,
+                    order_type=getattr(domain_order, 'order_type', None),
+                    is_algo=domain_order.source == OrderSource.ALGO,
+                    create_time_ms=getattr(domain_order, 'create_time_ms', None),
+                    conditional_kind=getattr(domain_order, 'conditional_kind', None),
+                    closes_long=domain_order.side.lower() == 'sell',
+                    closes_short=domain_order.side.lower() == 'buy',
+                    algo_type="CONDITIONAL" if domain_order.source == OrderSource.ALGO else None 
+                ))
+            session.commit()
             
         return orders
     except Exception as e:

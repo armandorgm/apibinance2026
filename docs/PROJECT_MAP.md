@@ -10,8 +10,9 @@ Rastreador de operaciones para Binance Futures con soporte para emparejamiento F
 ## Diccionario de Directorios
 - `backend/app/api/`: Endpoints REST.
 - `backend/app/core/`: Configuración y gestor de exchange.
-- `backend/app/db/`: Modelos de base de datos (`Fill`, `Trade`, `BotConfig`).
-- `backend/app/services/`: Lógica de negocio (`TrackerLogic`, `TradingBot`, `HistoryFormatter`).
+- `backend/app/db/`: Modelos de base de datos (`Fill`, `Trade`, `Order`, `BotConfig`).
+- `backend/app/domain/orders/`: Núcleo de la arquitectura de órdenes (SOLID). `BaseOrder`, `OrderFactory`, `OriginResolver`.
+- `backend/app/services/`: Lógica de negocio (`TradeTracker`, `BotService`, `HistoryFormatter`).
 - `frontend/app/`: Páginas y layouts de Next.js.
 - `frontend/components/`: Componentes UI reutilizables.
 - `frontend/lib/`: Utilidades, cliente API y motor de trading.
@@ -22,7 +23,7 @@ Rastreador de operaciones para Binance Futures con soporte para emparejamiento F
 - `frontend/app/exchange-logs/`: Monitor interactivo central para reportes y respuestas CCXT.
 
 ## Flujos Críticos de Datos
-1. **Sincronización**: Binance API -> `exchange.py` -> `fills` table -> `tracker_logic.py` -> `trades` table.
+1. **Sincronización**: Binance API -> `exchange.py` -> `ensure_orders_exist` -> `orders` / `fills` tables -> `tracker_logic.py` -> `trades` table.
 2. **Visualización**: `routes.py` -> `api.ts` -> React Query -> `trade-table.tsx` / `trade-chart.tsx`.
 3. **Formateo**: Precios brutos -> `lib/utils.ts` (`formatPrice`) -> UI.
 4. **Ejecución Autónoma**: `BotConfig` (DB) -> `BotService` (Background Task) -> CCXT -> Binance API -> `BotSignal` (DB).

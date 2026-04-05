@@ -8,6 +8,25 @@ interface TradeTableProps {
   trades: Trade[]
 }
 
+function OriginatorBadge({ originator }: { originator: string | undefined }) {
+  if (!originator) return null;
+  
+  const config: Record<string, { label: string; icon: string; className: string }> = {
+    'BOT_APP': { label: 'BOT', icon: '🤖', className: 'bg-indigo-100 text-indigo-700 dark:bg-indigo-900/40 dark:text-indigo-300' },
+    'MANUAL': { label: 'MANUAL', icon: '👤', className: 'bg-slate-100 text-slate-700 dark:bg-slate-800 dark:text-slate-300' },
+    'AUTO_ALGO': { label: 'AUTO', icon: '⚡', className: 'bg-amber-100 text-amber-700 dark:bg-amber-900/40 dark:text-amber-300' },
+  };
+
+  const { label, icon, className } = config[originator] || { label: originator, icon: '❓', className: 'bg-gray-100 text-gray-700 dark:bg-gray-800' };
+
+  return (
+    <span className={`inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] font-bold uppercase tracking-tight ${className}`}>
+      <span>{icon}</span>
+      <span>{label}</span>
+    </span>
+  );
+}
+
 function TypeTagBadges({ tags, variant }: { tags: string[] | undefined; variant: 'entry' | 'exit' }) {
   const list = tags && tags.length > 0 ? tags : []
   const base =
@@ -100,9 +119,12 @@ export function TradeTable({ trades }: TradeTableProps) {
               }`}
             >
               <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-900 dark:text-white align-top">
-                <div className="flex flex-col">
-                  <span className="font-medium">{formatDate(trade.entry_datetime)}</span>
-                  <span className={`text-xs ${trade.entry_side === 'buy' ? 'text-green-600' : 'text-red-600'}`}>
+                <div className="flex flex-col gap-1">
+                  <div className="flex items-center gap-2">
+                    <span className="font-medium">{formatDate(trade.entry_datetime)}</span>
+                    <OriginatorBadge originator={trade.originator} />
+                  </div>
+                  <span className={`text-xs font-bold ${trade.entry_side === 'buy' ? 'text-green-600' : 'text-red-600'}`}>
                     {trade.entry_side.toUpperCase()}
                   </span>
                   <TypeTagBadges tags={trade.entry_order_tags} variant="entry" />
