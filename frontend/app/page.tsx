@@ -12,7 +12,7 @@ import { formatPrice } from '@/lib/utils'
 import Link from 'next/link'
 
 export default function Home() {
-  const [symbol, setSymbol] = useState('BTC/USDT')
+  const [symbol, setSymbol] = useState('1000PEPEUSDC')
   const [logic, setLogic] = useState('atomic_fifo')
   const [sortBy, setSortBy] = useState('recent')
   const [includeUnrealized, setIncludeUnrealized] = useState(false)

@@ -6,6 +6,25 @@ import { format } from 'date-fns'
 import { formatPrice, formatAmount } from '@/lib/utils'
 import Link from 'next/link'
 
+function OriginatorBadge({ originator }: { originator: string | undefined }) {
+  if (!originator) return null;
+  
+  const config: Record<string, { label: string; icon: string; className: string }> = {
+    'BOT_APP': { label: 'BOT', icon: '🤖', className: 'bg-indigo-100 text-indigo-700 dark:bg-indigo-900/40 dark:text-indigo-300 border-indigo-200/50' },
+    'MANUAL': { label: 'MANUAL', icon: '👤', className: 'bg-slate-100 text-slate-700 dark:bg-slate-800 dark:text-slate-300 border-slate-200/50' },
+    'AUTO_ALGO': { label: 'AUTO', icon: '⚡', className: 'bg-amber-100 text-amber-700 dark:bg-amber-900/40 dark:text-amber-300 border-amber-200/50' },
+  };
+
+  const { label, icon, className } = config[originator] || { label: originator, icon: '❓', className: 'bg-gray-100 text-gray-700 dark:bg-gray-800' };
+
+  return (
+    <span className={`inline-flex items-center gap-1.5 px-2 py-0.5 rounded-lg text-[10px] font-bold uppercase tracking-tight border ${className}`}>
+      <span>{icon}</span>
+      <span>{label}</span>
+    </span>
+  );
+}
+
 export default function OrdersPage() {
   const [activeTab, setActiveTab] = useState<'live' | 'failed'>('live')
   const [showOnlyBot, setShowOnlyBot] = useState(true)
@@ -108,40 +127,28 @@ export default function OrdersPage() {
                           <div className="text-[10px] text-gray-400">{format(new Date(order.datetime), 'dd/MM HH:mm:ss')}</div>
                         </td>
                         <td className="px-6 py-4 whitespace-nowrap">
-                          <div className="flex flex-col gap-1">
-                            {order.is_algo ? (
+                            {order.source === 'ALGO' ? (
                               <span className="flex items-center gap-1.5 text-[10px] text-purple-600 dark:text-purple-400 font-bold bg-purple-50 dark:bg-purple-900/30 px-2 py-0.5 rounded border border-purple-100 dark:border-purple-800 w-fit">
-                                🤖 ALGO SERVICE (TP/SL)
+                                🛡️ ALGO SERVICE
                               </span>
                             ) : (
                                 <span className="flex items-center gap-1.5 text-[10px] text-blue-600 dark:text-blue-400 font-bold bg-blue-50 dark:bg-blue-900/30 px-2 py-0.5 rounded border border-blue-100 dark:border-blue-800 w-fit">
-                                ⚖️ STANDARD (LIMIT)
+                                ⚖️ STANDARD
                               </span>
                             )}
                             <div className="flex flex-wrap items-center gap-1">
-                              <span className="text-xs font-semibold px-2 py-1 rounded bg-gray-100 dark:bg-gray-700 text-gray-600 dark:text-gray-300 uppercase">
-                                {order.type}
-                              </span>
                               <span className={`text-xs font-bold ${order.side === 'buy' ? 'text-green-500' : 'text-red-500'}`}>
                                 {order.side.toUpperCase()}
                               </span>
-                              {order.is_algo && order.conditional_kind === 'take_profit' && order.side === 'sell' && (
+                              <span className="text-xs font-semibold px-1.5 py-0.5 rounded bg-gray-100 dark:bg-gray-700 text-gray-600 dark:text-gray-300 uppercase text-[10px]">
+                                {order.type}
+                              </span>
+                              {order.source === 'ALGO' && (
                                 <span className="text-[10px] font-bold text-amber-700 dark:text-amber-400 bg-amber-50 dark:bg-amber-900/40 px-1.5 py-0.5 rounded border border-amber-200 dark:border-amber-800">
-                                  TP → cierra LONG
-                                </span>
-                              )}
-                              {order.is_algo && order.conditional_kind === 'stop_loss' && order.side === 'sell' && (
-                                <span className="text-[10px] font-bold text-rose-700 dark:text-rose-400 bg-rose-50 dark:bg-rose-900/30 px-1.5 py-0.5 rounded border border-rose-200 dark:border-rose-800">
-                                  SL → cierra LONG
-                                </span>
-                              )}
-                              {order.position_side && (
-                                <span className="text-[10px] text-gray-500 dark:text-gray-400 font-mono">
-                                  pos: {order.position_side.toUpperCase()}
+                                  CONDITIONAL
                                 </span>
                               )}
                             </div>
-                          </div>
                         </td>
                         <td className="px-6 py-4 whitespace-nowrap text-sm font-medium text-gray-900 dark:text-white">
                           {formatPrice(order.price)}
@@ -156,14 +163,14 @@ export default function OrdersPage() {
                           </span>
                         </td>
                         <td className="px-6 py-4 whitespace-nowrap">
-                          {order.is_bot_logged ? (
-                            <span className="flex items-center gap-1.5 text-xs text-indigo-600 dark:text-indigo-400 font-bold bg-indigo-50 dark:bg-indigo-900/30 px-2 py-1 rounded-lg border border-indigo-100 dark:border-indigo-800">
-                              <span className="w-1.5 h-1.5 bg-indigo-500 rounded-full animate-pulse" />
-                              Bot Logged
-                            </span>
-                          ) : (
-                            <span className="text-xs text-gray-400 italic">Manual / Externo</span>
-                          )}
+                          <div className="flex flex-col gap-1">
+                            <OriginatorBadge originator={order.originator} />
+                            {order.is_bot_logged && (
+                              <span className="text-[9px] text-indigo-400 font-medium uppercase tracking-tighter">
+                                Bot Confirmed ✅
+                              </span>
+                            )}
+                          </div>
                         </td>
                       </tr>
                     ))
