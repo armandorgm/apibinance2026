@@ -132,6 +132,23 @@ class BotConfig(SQLModel, table=True):
     updated_at: datetime = Field(default_factory=datetime.utcnow)
 
 
+class BotPipeline(SQLModel, table=True):
+    """
+    User-defined sequence of conditions and actions (Pipelines).
+    Supports Open/Closed extension via JSON configuration.
+    """
+    __tablename__ = "bot_pipelines"
+    
+    id: Optional[int] = Field(default=None, primary_key=True)
+    name: str = Field(index=True)
+    symbol: str = Field(index=True)
+    is_active: bool = Field(default=True)
+    trigger_event: str = Field(default="POLLING") # POLLING, ON_TICK, etc.
+    pipeline_config: str = Field(default="{}") # JSON string containing the Nodes/Steps
+    created_at: datetime = Field(default_factory=datetime.utcnow)
+    updated_at: datetime = Field(default_factory=datetime.utcnow)
+
+
 class ExchangeLog(SQLModel, table=True):
     """
     Global log for all raw exchange requests and responses.

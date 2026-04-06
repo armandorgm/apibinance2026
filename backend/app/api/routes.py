@@ -7,7 +7,7 @@ from datetime import datetime
 from app.services.bot_service import bot_instance
 from sqlmodel import select, Session
 from pydantic import BaseModel, ConfigDict
-from app.db.database import Fill, Trade, BotSignal, BotConfig, ExchangeLog, Order, get_session_direct, create_db_and_tables, engine, Originator, OrderSource
+from app.db.database import Fill, Trade, BotSignal, BotConfig, ExchangeLog, Order, BotPipeline, get_session_direct, create_db_and_tables, engine, Originator, OrderSource
 from app.services.tracker_logic import TradeTracker
 from app.core.exchange import exchange_manager
 from app.services.history_formatter import TradeResponseFormatter, SortByEntryDateDesc, SortByEntryDateAsc, SortByPnLDesc
@@ -34,6 +34,9 @@ from app.services.order_type_enrichment import (
 )
 from abc import ABC, abstractmethod
 import json
+
+from app.services.pipeline_engine.data_providers import DATA_PROVIDERS
+from app.services.pipeline_engine.actions import ACTIONS
 
 router = APIRouter()
 
@@ -1070,4 +1073,58 @@ async def debug_postman(payload: PostmanRequest):
         res = await exchange.request(payload.path, payload.api, payload.method, payload.params)
         return {"status": "success", "data": res}
     except Exception as e:
-        return {"status": "error", "message": str(e)}
+        raise HTTPException(status_code=500, detail=str(e))
+
+# --- PIPELINES API ---
+
+class PipelineCreateReq(BaseModel):
+    name: str
+    symbol: str
+    is_active: bool = True
+    trigger_event: str = "POLLING"
+    pipeline_config: str
+
+@router.get("/bot/pipelines/metadata")
+async def get_pipeline_metadata():
+    """Returns available nodes for the Pipeline Builder."""
+    return {
+        "providers": list(DATA_PROVIDERS.keys()),
+        "actions": list(ACTIONS.keys()),
+        "operators": ["GT", "LT", "EQ"]
+    }
+
+@router.get("/bot/pipelines")
+async def get_pipelines():
+    with get_session_direct() as session:
+        return session.exec(select(BotPipeline)).all()
+
+@router.post("/bot/pipelines")
+async def create_pipeline(payload: PipelineCreateReq):
+    with get_session_direct() as session:
+        pipeline = BotPipeline(**payload.model_dump())
+        session.add(pipeline)
+        session.commit()
+        session.refresh(pipeline)
+        return pipeline
+
+@router.put("/bot/pipelines/{pipeline_id}/toggle")
+async def toggle_pipeline(pipeline_id: int):
+    with get_session_direct() as session:
+        pipeline = session.get(BotPipeline, pipeline_id)
+        if not pipeline:
+            raise HTTPException(status_code=404, detail="Pipeline not found")
+        pipeline.is_active = not pipeline.is_active
+        session.add(pipeline)
+        session.commit()
+        session.refresh(pipeline)
+        return pipeline
+
+@router.delete("/bot/pipelines/{pipeline_id}")
+async def delete_pipeline(pipeline_id: int):
+    with get_session_direct() as session:
+        pipeline = session.get(BotPipeline, pipeline_id)
+        if not pipeline:
+            raise HTTPException(status_code=404, detail="Pipeline not found")
+        session.delete(pipeline)
+        session.commit()
+        return {"status": "deleted"}

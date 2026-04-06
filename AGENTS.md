@@ -191,6 +191,13 @@ On completion, the agent MUST emit:
 
 ---
 
+## Environment Limitations & Tooling Issues
+
+**CRITICAL (Added: 2026-04-06T05:45Z):**
+- **Sandboxing Error on Windows (`SafeToAutoRun` in Antigravity):** Do NOT run terminal commands using `SafeToAutoRun=true` for internal workspace checks or git maneuvers on this local Windows environment if they fail with `"failed to set up sandbox: sandboxing is not supported on Windows"`. Use `SafeToAutoRun=false` and request user permission via UI, or explain what the user should execute. Using it continuously triggers a 6-hour system suspension.
+
+---
+
 ## Branching & GitFlow
 
 Full workflow defined in `.agents/workflows/gitflow-process.md` (slash command: `/gitflow-process`).
@@ -271,4 +278,4 @@ To avoid massive scans and facilitate onboarding of new agents or conversations:
 
 ---
 
-*Last updated: 2026-04-04 | Maintained by AI agents — update incrementally, never overwrite whole sections.*
+*Last updated: 2026-04-06 | Maintained by AI agents — update incrementally, never overwrite whole sections.*

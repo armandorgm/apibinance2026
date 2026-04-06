@@ -266,3 +266,56 @@ export async function fetchFailedOrders(limit: number = 50): Promise<BotSignal[]
   if (!response.ok) throw new Error('Error fetching failed orders')
   return response.json()
 }
+
+
+// --- PIPELINES API ---
+
+export interface PipelineMetadata {
+  providers: string[]
+  actions: string[]
+  operators: string[]
+}
+
+export interface BotPipeline {
+  id: number
+  name: string
+  symbol: string
+  is_active: boolean
+  trigger_event: string
+  pipeline_config: string
+  created_at: string
+  updated_at: string
+}
+
+export async function fetchPipelineMetadata(): Promise<PipelineMetadata> {
+  const response = await fetch(`${API_BASE_URL}/api/bot/pipelines/metadata`)
+  if (!response.ok) throw new Error('Error fetching pipeline metadata')
+  return response.json()
+}
+
+export async function fetchPipelines(): Promise<BotPipeline[]> {
+  const response = await fetch(`${API_BASE_URL}/api/bot/pipelines`)
+  if (!response.ok) throw new Error('Error fetching pipelines')
+  return response.json()
+}
+
+export async function togglePipeline(id: number): Promise<BotPipeline> {
+  const response = await fetch(`${API_BASE_URL}/api/bot/pipelines/${id}/toggle`, { method: 'PUT' })
+  if (!response.ok) throw new Error('Error toggling pipeline')
+  return response.json()
+}
+
+export async function deletePipeline(id: number): Promise<void> {
+  const response = await fetch(`${API_BASE_URL}/api/bot/pipelines/${id}`, { method: 'DELETE' })
+  if (!response.ok) throw new Error('Error deleting pipeline')
+}
+
+export async function createPipeline(payload: Partial<BotPipeline>): Promise<BotPipeline> {
+  const response = await fetch(`${API_BASE_URL}/api/bot/pipelines`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload),
+  })
+  if (!response.ok) throw new Error('Error creating pipeline')
+  return response.json()
+}

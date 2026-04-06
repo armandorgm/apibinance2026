@@ -56,6 +56,15 @@ export default function Home() {
           </div>
           <div className="flex gap-2">
             <a
+              href="/pipelines"
+              className="flex items-center gap-2 px-4 py-2 bg-indigo-600/10 border border-indigo-200 hover:bg-indigo-600/20 text-indigo-700 dark:text-indigo-400 dark:border-indigo-800 rounded-xl font-bold transition-all shadow-sm active:scale-95"
+            >
+              <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 6V4m0 2a2 2 0 100 4m0-4a2 2 0 110 4m-6 8a2 2 0 100-4m0 4a2 2 0 110-4m0 4v2m0-6V4m6 6v10m6-2a2 2 0 100-4m0 4a2 2 0 110-4m0 4v2m0-6V4" />
+              </svg>
+              Pipelines
+            </a>
+            <a
               href="/orders"
               className="flex items-center gap-2 px-4 py-2 bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 hover:bg-gray-50 dark:hover:bg-gray-700/50 text-gray-700 dark:text-gray-300 rounded-xl font-bold transition-all shadow-sm active:scale-95"
             >
