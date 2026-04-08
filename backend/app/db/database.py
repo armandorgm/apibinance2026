@@ -149,6 +149,33 @@ class BotPipeline(SQLModel, table=True):
     updated_at: datetime = Field(default_factory=datetime.utcnow)
 
 
+class BotPipelineProcess(SQLModel, table=True):
+    """
+    State tracking for active pipeline executions like Adaptive OTO Scaling.
+    Cleaned up automatically once the final order is placed.
+    """
+    __tablename__ = "bot_pipeline_processes"
+    
+    id: Optional[int] = Field(default=None, primary_key=True)
+    pipeline_id: int = Field(index=True)
+    symbol: str = Field(index=True)
+    
+    # Mother order tracking
+    entry_order_id: Optional[str] = None
+    side: str = Field(default="buy")
+    amount: float = Field(default=0.0)
+    
+    # Prices to determine when to move
+    last_tick_price: Optional[float] = None # Price of market when we decided to move
+    last_order_price: Optional[float] = None # Price truly sent to Binance
+    
+    # Status of the session: 'CHASING', 'WAITING_FILL', 'COMPLETED', 'ABORTED'
+    status: str = Field(default="CHASING")
+    
+    created_at: datetime = Field(default_factory=datetime.utcnow)
+    updated_at: datetime = Field(default_factory=datetime.utcnow)
+
+
 class ExchangeLog(SQLModel, table=True):
     """
     Global log for all raw exchange requests and responses.

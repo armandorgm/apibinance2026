@@ -190,7 +190,10 @@ class TradeTracker:
         """
         orders = {}
         for fill in fills:
-            oid = fill.order_id or f"manual_{fill.timestamp}_{fill.trade_id}"
+            oid = fill.order_id
+            if not oid or oid == "" or oid == "None":
+                oid = f"manual_{fill.timestamp}_{fill.trade_id}"
+            
             if oid not in orders:
                 orders[oid] = {
                     'order_id': oid,
@@ -205,10 +208,24 @@ class TradeTracker:
                     'fill_count': 0,
                     'order_type': None,
                     'can_be_entry': True,
-                    'originator': 'UNKNOWN'
+                    'originator': 'UNKNOWN',
+                    'fills': [] # Total transparency: store the raw fills
                 }
             
             o = orders[oid]
+            o['amount'] += fill.amount
+            o['cost'] += fill.amount * fill.price
+            o['fee'] += fill.fee
+            o['fill_count'] += 1
+            o['fills'].append({
+                'trade_id': fill.trade_id,
+                'order_id': fill.order_id,
+                'price': fill.price,
+                'amount': fill.amount,
+                'fee': fill.fee,
+                'datetime': fill.datetime.isoformat() if hasattr(fill.datetime, 'isoformat') else str(fill.datetime),
+                'role': 'Maker' # Defaulting or extracting from raw info if needed
+            })
             # Try to enrich with data from orders table if available
             # Note: In a real sync, we should fetch all relevant orders beforehand for performance
             if getattr(fill, "order_type", None) and o.get("order_type") is None:
@@ -218,10 +235,6 @@ class TradeTracker:
             if hasattr(fill, "originator"):
                 o["originator"] = fill.originator
                 
-            o['amount'] += fill.amount
-            o['cost'] += fill.cost
-            o['fee'] += fill.fee
-            o['fill_count'] += 1
             # Weighted average price
             if o['amount'] > 0:
                 o['price'] = o['cost'] / o['amount']
@@ -293,6 +306,8 @@ class TradeTracker:
             'exit_order_type': sell.get('order_type'),
             'originator': buy.get('originator', 'MANUAL'),
             'can_be_entry': buy.get('can_be_entry', True),
+            'entry_fills': buy.get('fills', []),
+            'exit_fills': sell.get('fills', []),
         }
 
     def match_trades(self, fills: List[Fill], strategy_name: str = "atomic_fifo", session: Optional[Session] = None) -> List[Dict[str, Any]]:
@@ -402,8 +417,11 @@ class TradeTracker:
                     'entry_fee': b['fee'],
                     'entry_timestamp': b['timestamp'],
                     'entry_datetime': b['datetime'],
+                    'entry_order_id': b.get('order_id'),
                     'entry_order_type': b.get('order_type'),
                     'originator': b.get('originator', 'MANUAL'),
+                    'entry_fills': b.get('fills', []), # Propagate for UI expansion
+                    'exit_fills': []
                 })
 
         # Unmatched sells → orphan sells (closed before history or data gap)
@@ -417,6 +435,7 @@ class TradeTracker:
                     'entry_fee': s['fee'],
                     'entry_timestamp': s['timestamp'],
                     'entry_datetime': s['datetime'],
+                    'entry_order_id': s.get('order_id'),
                     'entry_order_type': s.get('order_type'),
                     'is_orphan': True,  # Marker for UI
                 })

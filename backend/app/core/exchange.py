@@ -139,8 +139,8 @@ class ExchangeManager:
         self,
         symbol: str,
         side: str,
-        amount: float,
-        price: Optional[float] = None,
+        amount: Any,
+        price: Optional[Any] = None,
         order_type: str = 'market',
         params: Optional[Dict[str, Any]] = None
     ) -> Dict[str, Any]:
@@ -148,21 +148,27 @@ class ExchangeManager:
         await self._rate_limit()
         exchange = await self.get_exchange()
         
+        # Consistent float conversion for Binance API compatibility
+        f_amount = float(amount) if amount is not None else 0.0
+        f_price = float(price) if price is not None else None
+        
         try:
+            # Using positional arguments for CCXT to avoid any keyword mapping confusion
+            # Signature: symbol, type, side, amount, price=None, params={}
             order = await exchange.create_order(
-                symbol=symbol,
-                type=order_type,
-                side=side,
-                amount=amount,
-                price=price,
-                params=params or {}
+                symbol,
+                order_type,
+                side,
+                f_amount,
+                f_price,
+                params or {}
             )
-            print(f"--- [DEBUG] Order created: {order['id']} ({side} {amount} {symbol})")
-            ExchangeLogger.log_request("create_order", {"symbol": symbol, "side": side, "amount": amount, "price": price, "type": order_type}, response=order)
+            print(f"--- [DEBUG] Order created: {order['id']} ({side} {f_amount} {symbol})")
+            ExchangeLogger.log_request("create_order", {"symbol": symbol, "side": side, "amount": f_amount, "price": f_price, "type": order_type}, response=order)
             return order
         except Exception as e:
             print(f"--- [DEBUG] ERROR creating order for {symbol}: {e}")
-            ExchangeLogger.log_request("create_order", {"symbol": symbol, "side": side, "amount": amount, "price": price, "type": order_type}, error_message=str(e))
+            ExchangeLogger.log_request("create_order", {"symbol": symbol, "side": side, "amount": f_amount, "price": f_price, "type": order_type}, error_message=str(e))
             raise Exception(f"Error creating order on Binance: {str(e)}")
 
     async def get_open_positions(self, symbol: Optional[str] = None) -> List[Dict[str, Any]]:
@@ -323,6 +329,18 @@ class ExchangeManager:
         except Exception:
             pass
         return symbol
+
+    async def price_to_precision(self, symbol: str, price: float) -> str:
+        """Convert price to the precision required by the exchange (Async)."""
+        exchange = await self.get_exchange()
+        await exchange.load_markets()
+        return exchange.price_to_precision(symbol, price)
+
+    async def amount_to_precision(self, symbol: str, amount: float) -> str:
+        """Convert amount to the precision required by the exchange (Async)."""
+        exchange = await self.get_exchange()
+        await exchange.load_markets()
+        return exchange.amount_to_precision(symbol, amount)
 
 
 # Global exchange manager instance

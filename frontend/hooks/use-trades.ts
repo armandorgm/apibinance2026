@@ -5,8 +5,8 @@ import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { 
   fetchTrades, syncTrades, syncHistoricalTrades, fetchStats, 
   fetchBotStatus, fetchBotLogs, startBot, stopBot, fetchBotConfig, updateBotConfig, fetchBalances,
-  fetchOpenOrders, fetchFailedOrders,
-  Trade, Stats, SyncResponse, BotStatus, BotSignal, BotConfig, AggregatedBalances, Order 
+  fetchOpenOrders, fetchFailedOrders, fetchActivePipelines, stopPipeline,
+  Trade, Stats, SyncResponse, BotStatus, BotSignal, BotConfig, AggregatedBalances, Order, ActivePipeline
 } from '@/lib/api'
 
 export function useTrades(symbol: string, logic: string = 'fifo', sortBy: string = 'recent') {
@@ -120,6 +120,24 @@ export function useFailedOrders(limit: number = 50) {
   return useQuery<BotSignal[]>({
     queryKey: ['failed-orders', limit],
     queryFn: () => fetchFailedOrders(limit),
-    refetchInterval: 10000, // Refresh every 10 seconds
+    refetchInterval: 10000,
+  })
+}
+
+export function useActivePipelines() {
+  return useQuery<ActivePipeline[]>({
+    queryKey: ['active-pipelines'],
+    queryFn: () => fetchActivePipelines(),
+    refetchInterval: 2000, // Frequent refresh for live chase monitoring
+  })
+}
+
+export function useStopPipeline() {
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: (id: number) => stopPipeline(id),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['active-pipelines'] })
+    }
   })
 }

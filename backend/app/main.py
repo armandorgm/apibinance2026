@@ -1,3 +1,7 @@
+# Reload trigger: 2026-04-06 10:20:00
+"""
+FastAPI application for automated trading dashboard.
+"""
 """
 FastAPI main application entry point.
 Handles API routes, CORS, and application configuration.
@@ -8,6 +12,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from app.api.routes import router
 from app.core.config import settings
 from app.db.database import create_db_and_tables
+from app.core.logger import logger
 
 # Initialize database on startup
 create_db_and_tables()

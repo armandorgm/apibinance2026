@@ -4,6 +4,7 @@ import React from 'react'
 import { useBotStatus, useBotLogs, useBotControl } from '@/hooks/use-trades'
 import { format } from 'date-fns'
 import { clsx } from 'clsx'
+import { ActivePipelines } from './active-pipelines'
 
 export function BotMonitor() {
   const { data: status, isLoading: isStatusLoading } = useBotStatus()
@@ -165,6 +166,11 @@ export function BotMonitor() {
             ))
           )}
         </div>
+      </div>
+
+      {/* Active Pipelines Monitor */}
+      <div className="lg:col-span-3">
+        <ActivePipelines />
       </div>
     </div>
   )

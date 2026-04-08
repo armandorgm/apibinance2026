@@ -61,6 +61,7 @@ apibinance2026/
 ├── .agents/                          # Antigravity-specific agents/workflows/skills
 │   └── workflows/                    # Slash command workflows
 │       ├── gitflow-process.md        # /gitflow-process
+│       ├── implementation-safety.md  # /implementation-safety
 │       └── orquestador.md            # /orquestador
 ├── .cursorrules                      # Cursor compat redirect → see AGENTS.md
 ├── .gemini/gemini.md                 # Antigravity compat redirect → see AGENTS.md
@@ -188,6 +189,24 @@ Once the solution is validated and temporaries are closed, generate a report in 
 
 On completion, the agent MUST emit:
 > *"The execution cycle has concluded. Logs in `.temp/` and report in `docs/incidents/`. Branch/stash state has been managed as needed. Do you want to delete temporaries or apply a repair/modification/restoration plan?"*
+
+### 7. Implementation Safety Standard (New)
+
+To prevent breaking existing code during feature expansion:
+
+- **Impact Scan**: Always use `Select-String` or `ripgrep` to find all usages of a module before modifying its interface.
+- **Frontend-Backend Sync**: If an API endpoint is changed, the corresponding React Query hook and fetcher MUST be updated in the same PR.
+- **SQLite Migrations**: If `database.py` models change, provide a script to add columns to the existing SQLite DB with sensible defaults.
+- **Indentation & Syntax**: Always run a "dry run" or syntax check (parsing) after every modification. Parse errors are unacceptable.
+
+---
+
+## Prevención de Regresiones y Flujo de Trabajo Seguro
+
+1. **Fase de Análisis de Impacto (Obligatoria):** Antes de generar o escribir código para una nueva funcionalidad, el agente DEBE analizar el proyecto actual, identificar qué módulos o funciones podrían verse afectados, listar las dependencias y ESPERAR la confirmación del usuario antes de proceder con la escritura.
+2. **Principio de Integridad:** Cualquier modificación debe respetar rigurosamente las firmas de las funciones existentes. Si un cambio requiere modificar un módulo dependiente (por ejemplo, alterar una interfaz que rompa la visualización en el frontend), debe notificarse explícitamente y requerir autorización antes de ejecutar el cambio.
+3. **Modularización Extrema (Divide y Vencerás):** Obligatorio el uso de interfaces o tipos estrictos. Si se necesita alterar un objeto, función o componente que ya está en uso en otra parte del proyecto, se debe PRIORIZAR extender la funcionalidad en lugar de mutar y romper la original.
+4. **Validación en Modo Planning:** Todo plan de implementación para nuevas características debe incluir un plan de pruebas integrado. El agente debe listar qué pruebas manuales o puntos de chequeo se deben verificar en los módulos adyacentes para asegurar que sigan funcionando correctamente tras la integración.
 
 ---
 

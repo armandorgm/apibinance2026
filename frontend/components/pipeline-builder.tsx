@@ -2,6 +2,7 @@
 
 import { useEffect, useState } from "react"
 import { fetchPipelines, fetchPipelineMetadata, createPipeline, togglePipeline, deletePipeline, BotPipeline, PipelineMetadata } from "@/lib/api"
+import { AdaptiveChaseButton } from "./adaptive-chase-button"
 
 export function PipelineBuilder() {
   const [pipelines, setPipelines] = useState<BotPipeline[]>([])
@@ -177,7 +178,10 @@ export function PipelineBuilder() {
 
       {/* Right Column: List */}
       <div className="col-span-2 p-6 overflow-y-auto">
-        <h2 className="font-semibold text-lg mb-4 text-gray-900 dark:text-white">Secuencias Activas en Memoria</h2>
+        <div className="flex flex-row items-center justify-between mb-4">
+          <h2 className="font-semibold text-lg text-gray-900 dark:text-white">Secuencias Activas en Memoria</h2>
+          <AdaptiveChaseButton symbol={symbol} />
+        </div>
         
         {pipelines.length === 0 ? (
           <div className="flex flex-col items-center justify-center py-20 text-gray-500 border border-dashed rounded-lg dark:border-gray-700">

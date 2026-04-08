@@ -37,6 +37,13 @@ El archivo `docs/PROJECT_MAP.md` es el "Cerebro Colectivo" del proyecto y debe p
 - **PnL**: El cálculo neto debe descontar siempre todas las comisiones.
 - **Latencia**: Al modificar la API local, esperar 5-10 segundos antes de ejecutar tests para permitir el reload del runtime.
 
+## 🛠️ 6. CLI y Sintaxis (Entorno Windows/PowerShell)
+Para evitar fallos de ejecución en este entorno específico:
+1. **Separadores**: Usar `;` en lugar de `&&` para concatenar comandos (PowerShell nativo).
+2. **Quoting en Python**: Para comandos `python -c`, usar comillas dobles `"` para el bloque de código y comillas simples `'` internas, o viceversa, asegurando que PowerShell no interpole variables inesperadas.
+3. **Paths**: Siempre usar `\` para rutas locales y preferir rutas absolutas o relativas al root mediante `Cwd`.
+4. **Logs**: Para monitoreo en tiempo real, usar `Get-Content <file> -Wait` (equivalente a `tail -f`).
+
 ---
 
 > [!IMPORTANT]

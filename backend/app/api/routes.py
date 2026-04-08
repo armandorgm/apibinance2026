@@ -4,6 +4,8 @@ API routes for the Binance Futures Tracker.
 from fastapi import APIRouter, HTTPException
 from typing import Any, List, Optional, Set
 from datetime import datetime
+import traceback
+from app.core.logger import logger
 from app.services.bot_service import bot_instance
 from sqlmodel import select, Session
 from pydantic import BaseModel, ConfigDict
@@ -51,6 +53,17 @@ class SyncResponse(BaseModel):
     end_time: Optional[int] = None
 
 
+class FillDetail(BaseModel):
+    """Specific execution detail (trade) for total transparency."""
+    trade_id: str
+    order_id: str
+    price: float
+    amount: float
+    fee: float
+    datetime: str # String already formatted by tracker_logic
+    role: str = "Maker"
+
+
 class TradeResponse(BaseModel):
     """Response model for trade history."""
     model_config = ConfigDict(extra='ignore')
@@ -73,6 +86,10 @@ class TradeResponse(BaseModel):
     created_at: datetime
     is_orphan: bool = False
     
+    # Order IDs for reconciliation
+    entry_order_id: Optional[str] = None
+    exit_order_id: Optional[str] = None
+    
     # Pendientes y Extensiones UI
     is_pending: bool = False
     order_type: Optional[str] = None
@@ -86,6 +103,10 @@ class TradeResponse(BaseModel):
     # Origin Centric Fields
     originator: str = "MANUAL"
     can_be_entry: bool = True
+    
+    # Nested Fills for UI Expansion (Total Transparency)
+    entry_fills: List[FillDetail] = []
+    exit_fills: List[FillDetail] = []
 
 class OrderResponse(BaseModel):
     """Response model for live open orders."""
@@ -271,13 +292,47 @@ async def get_trade_history(symbol: str = "BTC/USDT", logic: str = "fifo", sort_
                 )
                 trades = session.exec(statement).all()
 
-            # Build closed trades from DB
+                # Fix: Atomic_fifo reads from DB, we MUST hydrate fills for UI expansion
+                all_order_ids = set()
+                for t in trades:
+                    if t.entry_order_id: all_order_ids.add(t.entry_order_id)
+                    if t.exit_order_id: all_order_ids.add(t.exit_order_id)
+                
+                # Batch fetch all relevant fills
+                fill_map = {}
+                if all_order_ids:
+                    fill_stmt = select(Fill).where(Fill.order_id.in_(list(all_order_ids)))
+                    all_fills = session.exec(fill_stmt).all()
+                    for f in all_fills:
+                        if f.order_id not in fill_map:
+                            fill_map[f.order_id] = []
+                        fill_map[f.order_id].append(f)
+
+            def get_fills_for_ui(order_id: str | None) -> List[Any]:
+                if not order_id or order_id not in fill_map:
+                    return []
+                return [
+                    {
+                        'trade_id': f.trade_id,
+                        'order_id': f.order_id,
+                        'price': f.price,
+                        'amount': f.amount,
+                        'fee': f.fee,
+                        'datetime': f.datetime.isoformat() if hasattr(f.datetime, 'isoformat') else str(f.datetime),
+                        'role': 'Maker' 
+                    }
+                    for f in fill_map[order_id]
+                ]
+
+            # Build closed trades from DB with hydrated fills
             closed = [
                 TradeResponse(
                     **{
                         **trade.model_dump(),
                         'entry_order_tags': tags_from_binance_order_type(trade.entry_order_type),
                         'exit_order_tags': tags_from_binance_order_type(trade.exit_order_type),
+                        'entry_fills': get_fills_for_ui(trade.entry_order_id),
+                        'exit_fills': get_fills_for_ui(trade.exit_order_id),
                     }
                 )
                 for trade in trades
@@ -570,7 +625,7 @@ async def sync_trades(symbol: str = "BTC/USDT", logic: str = "atomic_fifo"):
                         fee_currency=fee_currency,
                         timestamp=trade_data['timestamp'],
                         datetime=datetime.fromtimestamp(trade_data['timestamp'] / 1000),
-                        order_id=str(trade_data.get('order', ''))
+                        order_id=trade_data.get('order') or trade_data.get('info', {}).get('orderId')
                     )
                     session.add(fill)
                     fills_added += 1
@@ -674,7 +729,7 @@ async def sync_historical_trades(symbol: str = "BTC/USDT", logic: str = "atomic_
                         fee_currency=fee_currency,
                         timestamp=trade_data['timestamp'],
                         datetime=datetime.fromtimestamp(trade_data['timestamp'] / 1000),
-                        order_id=str(trade_data.get('order', ''))
+                        order_id=trade_data.get('order') or trade_data.get('info', {}).get('orderId')
                     )
                     session.add(fill)
                     fills_added += 1
@@ -1128,3 +1183,118 @@ async def delete_pipeline(pipeline_id: int):
         session.delete(pipeline)
         session.commit()
         return {"status": "deleted"}
+
+class ManualActionRequest(BaseModel):
+    symbol: str
+    action_type: str
+    
+@router.post("/bot/manual-action")
+async def trigger_manual_action(req: ManualActionRequest):
+    try:
+        from app.services.pipeline_engine.actions import ACTIONS
+        if req.action_type not in ACTIONS:
+            raise HTTPException(status_code=400, detail="Action not found")
+            
+        action = ACTIONS[req.action_type]
+        
+        # Ensure StreamManager is running for WebSocket reactiveness
+        from app.core.stream_service import stream_manager
+        await stream_manager.start()
+        
+        # Determine side based on closest open order, fallback to 'buy'
+        open_orders = await exchange_manager.fetch_open_orders(req.symbol)
+        
+        # Sort by distance to current price? Or just grab any open limit order
+        side = "buy"
+        if open_orders:
+            # Simple heuristic: see what side the user has pending mostly, or just the nearest
+            side = open_orders[0].get('side', 'buy')
+        
+        # Execute the action (which triggers CHASE loop via websocket)
+        ticker = await exchange_manager.fetch_ticker(req.symbol)
+        
+        # Robust current price detection: try 'last', then 'bid', then 'ask'
+        current_price = ticker.get('last') or ticker.get('bid') or ticker.get('ask') or ticker.get('close')
+        
+        if not current_price:
+            raise HTTPException(status_code=400, detail=f"No se pudo obtener el precio actual para {req.symbol}. Binance ticker incompleto.")
+        
+        with get_session_direct() as session:
+            statement = select(BotConfig)
+            config = session.exec(statement).first()
+            trade_amount = config.trade_amount if config else 20.0
+        
+        result = await action.execute(
+            symbol=req.symbol,
+            params={"side": side, "amount": float(trade_amount), "pipeline_id": 0},
+            context_params={"current_price": current_price}
+        )
+        
+        if result.get("success"):
+            return {"status": "success", "message": f"Action {req.action_type} started with side {side}"}
+        else:
+            # Log detailed error and forward traceback
+            logger.error(f"[MANUAL ACTION] Error: {result.get('error')}")
+            raise HTTPException(status_code=400, detail=result.get('error'))
+    except HTTPException:
+        # Re-raise managed errors without logging as unexpected
+        raise
+    except Exception as e:
+        tb = traceback.format_exc()
+        logger.error(f"[MANUAL ACTION] Unexpected exception: {tb}")
+        raise HTTPException(status_code=500, detail=tb)
+
+@router.get("/bot/active-pipelines")
+async def get_active_pipelines():
+    """List all currently active pipeline processes (Chases)."""
+    try:
+        from app.db.database import get_session_direct, BotPipelineProcess
+        with get_session_direct() as session:
+            processes = session.query(BotPipelineProcess).all()
+            # Convert to list of dicts for JSON serialization
+            return [
+                {
+                    "id": p.id,
+                    "symbol": p.symbol,
+                    "pipeline_id": p.pipeline_id,
+                    "entry_order_id": p.entry_order_id,
+                    "last_tick_price": p.last_tick_price,
+                    "status": p.status,
+                    "created_at": p.created_at.isoformat() if p.created_at else None
+                }
+                for p in processes
+            ]
+    except Exception as e:
+        logger.error(f"[PIPELINES] Error fetching active processes: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@router.delete("/bot/active-pipelines/{process_id}")
+async def stop_pipeline_process(process_id: int):
+    """Manually stop a chase process and cancel its order."""
+    try:
+        from app.db.database import get_session_direct, BotPipelineProcess
+        from app.core.exchange import exchange_manager
+        
+        with get_session_direct() as session:
+            process = session.query(BotPipelineProcess).filter(BotPipelineProcess.id == process_id).first()
+            if not process:
+                raise HTTPException(status_code=404, detail="Process not found")
+            
+            # Cancel order on Binance if it exists
+            if process.entry_order_id:
+                try:
+                    exchange_ccxt = await exchange_manager.get_exchange()
+                    await exchange_ccxt.cancel_order(process.entry_order_id, process.symbol)
+                    logger.info(f"[PIPELINES] Manually canceled order {process.entry_order_id} for {process.symbol}")
+                except Exception as e:
+                    logger.warning(f"[PIPELINES] Could not cancel order during stop: {e}")
+            
+            # Cleanup DB
+            session.delete(process)
+            session.commit()
+            return {"status": "success", "message": f"Process {process_id} stopped"}
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"[PIPELINES] Error stopping process: {e}")
+        raise HTTPException(status_code=500, detail=str(e))

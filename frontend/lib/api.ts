@@ -4,6 +4,16 @@
 
 const API_BASE_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000'
 
+export interface FillDetail {
+  trade_id: string
+  order_id: string
+  price: number
+  amount: number
+  fee: number
+  datetime: string
+  role: string
+}
+
 export interface Trade {
   id: number
   symbol: string
@@ -29,6 +39,9 @@ export interface Trade {
   /** Tipos de orden (Binance) calculados en backend */
   entry_order_tags?: string[]
   exit_order_tags?: string[]
+  /** Binance Order IDs for reconciliation */
+  entry_order_id?: string | null
+  exit_order_id?: string | null
   /** Origin Centric fields */
   originator?: string
   can_be_entry?: boolean
@@ -42,6 +55,9 @@ export interface Trade {
     conditional_kind?: string | null
     algo_type?: string | null
   } | null
+  /** Nested Fills for UI Expansion */
+  entry_fills?: FillDetail[]
+  exit_fills?: FillDetail[]
 }
 
 export interface ExchangeLog {
@@ -113,6 +129,16 @@ export interface BotSignal {
   error_message: string | null
   timestamp: number
   created_at: string
+}
+
+export interface ActivePipeline {
+  id: number
+  symbol: string
+  pipeline_id: number
+  entry_order_id: string | null
+  last_tick_price: number | null
+  status: string
+  created_at: string | null
 }
 
 export interface BotConfig {
@@ -319,3 +345,28 @@ export async function createPipeline(payload: Partial<BotPipeline>): Promise<Bot
   if (!response.ok) throw new Error('Error creating pipeline')
   return response.json()
 }
+
+export async function triggerManualAction(symbol: string, action_type: string): Promise<{status: string, message: string}> {
+  const response = await fetch(`${API_BASE_URL}/api/bot/manual-action`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ symbol, action_type }),
+  })
+  if (!response.ok) {
+    const err = await response.json().catch(() => ({}));
+    throw new Error(err.detail || 'Error triggering manual action');
+  }
+  return response.json()
+}
+
+export async function fetchActivePipelines(): Promise<ActivePipeline[]> {
+  const response = await fetch(`${API_BASE_URL}/api/bot/active-pipelines`)
+  if (!response.ok) throw new Error('Error fetching active pipelines')
+  return response.json()
+}
+
+export async function stopPipeline(id: number): Promise<void> {
+  const response = await fetch(`${API_BASE_URL}/api/bot/active-pipelines/${id}`, { method: 'DELETE' })
+  if (!response.ok) throw new Error('Error stopping pipeline')
+}
+

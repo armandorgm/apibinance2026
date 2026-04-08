@@ -1,8 +1,10 @@
 'use client'
 
-import { Trade } from '@/lib/api'
+import React, { useState } from 'react'
+import { Trade, FillDetail } from '@/lib/api'
 import { format } from 'date-fns'
 import { formatPrice, formatAmount, formatPercentage } from '@/lib/utils'
+import { ChevronDown, ChevronRight, ListTree, Zap, ShieldCheck, History } from 'lucide-react'
 
 interface TradeTableProps {
   trades: Trade[]
@@ -23,6 +25,15 @@ function OriginatorBadge({ originator }: { originator: string | undefined }) {
     <span className={`inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] font-bold uppercase tracking-tight ${className}`}>
       <span>{icon}</span>
       <span>{label}</span>
+    </span>
+  );
+}
+
+function OrderIdBadge({ id }: { id: string | null | undefined }) {
+  if (!id || id === '') return null;
+  return (
+    <span className="inline-flex items-center font-mono text-[9px] text-gray-400 dark:text-gray-500 bg-gray-50 dark:bg-gray-900/50 px-1 rounded border border-gray-100 dark:border-gray-800" title={`Binance Order ID: ${id}`}>
+      #{id.slice(-8)}
     </span>
   );
 }
@@ -56,13 +67,70 @@ function TypeTagBadges({ tags, variant }: { tags: string[] | undefined; variant:
   )
 }
 
+function FillsSubTable({ fills, title }: { fills: FillDetail[] | undefined; title: string }) {
+  if (!fills || fills.length === 0) return null;
+
+  return (
+    <div className="mt-2 mb-4 overflow-hidden rounded-lg border border-slate-100 dark:border-slate-800/60 shadow-sm">
+      <div className="bg-slate-50/50 dark:bg-slate-900/50 px-3 py-1.5 border-b border-slate-100 dark:border-slate-800/60 flex items-center gap-2">
+        <History className="w-3 h-3 text-slate-400" />
+        <span className="text-[10px] font-bold text-slate-500 dark:text-slate-400 uppercase tracking-wider">{title} (Executions)</span>
+      </div>
+      <table className="w-full text-[11px]">
+        <thead>
+          <tr className="bg-white dark:bg-slate-950/20 text-slate-400 text-[9px] uppercase">
+            <th className="px-3 py-1.5 text-left font-medium">Trade ID</th>
+            <th className="px-3 py-1.5 text-left font-medium">Price</th>
+            <th className="px-3 py-1.5 text-left font-medium">Quantity</th>
+            <th className="px-3 py-1.5 text-left font-medium">Fee</th>
+            <th className="px-3 py-1.5 text-left font-medium">Role</th>
+            <th className="px-3 py-1.5 text-right font-medium">Time</th>
+          </tr>
+        </thead>
+        <tbody className="divide-y divide-slate-100 dark:divide-slate-800/40">
+          {fills.map((fill) => (
+            <tr key={fill.trade_id} className="hover:bg-slate-50/30 dark:hover:bg-slate-800/20 transition-colors">
+              <td className="px-3 py-2 font-mono text-[10px] font-medium text-slate-500 dark:text-slate-400">
+                #{fill.trade_id.slice(-6)}
+              </td>
+              <td className="px-3 py-2 text-slate-700 dark:text-slate-300 font-semibold">{formatPrice(fill.price)}</td>
+              <td className="px-3 py-2 text-slate-600 dark:text-slate-400">{formatAmount(fill.amount)}</td>
+              <td className="px-3 py-2 text-rose-500/80 dark:text-rose-400/80">-{formatAmount(fill.fee)}</td>
+              <td className="px-3 py-2">
+                <span className="px-1 py-0.5 rounded bg-slate-100 dark:bg-slate-800 text-[9px] font-bold text-slate-500 uppercase">
+                  {fill.role}
+                </span>
+              </td>
+              <td className="px-3 py-2 text-right text-slate-400">
+                {fill.datetime.split('T')[1].split('.')[0]}
+              </td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  )
+}
+
 export function TradeTable({ trades }: TradeTableProps) {
+  const [expandedRows, setExpandedRows] = useState<Set<number>>(new Set())
+
   if (trades.length === 0) {
     return (
       <div className="p-8 text-center text-gray-500 dark:text-gray-400">
         No hay operaciones registradas. Haz clic en "Sincronizar" para obtener tus trades de Binance.
       </div>
     )
+  }
+
+  const toggleRow = (id: number) => {
+    const newExpanded = new Set(expandedRows)
+    if (newExpanded.has(id)) {
+      newExpanded.delete(id)
+    } else {
+      newExpanded.add(id)
+    }
+    setExpandedRows(newExpanded)
   }
 
   const formatDate = (dateString: string) => {
@@ -82,6 +150,7 @@ export function TradeTable({ trades }: TradeTableProps) {
       <table className="w-full">
         <thead className="bg-gray-50 dark:bg-gray-900">
           <tr>
+            <th className="w-8 px-4 py-3"></th>
             <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 dark:text-gray-400 uppercase tracking-wider">
               Entrada
             </th>
@@ -89,147 +158,129 @@ export function TradeTable({ trades }: TradeTableProps) {
               Salida
             </th>
             <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 dark:text-gray-400 uppercase tracking-wider">
-              Cantidad
+              Métricas
             </th>
-            <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 dark:text-gray-400 uppercase tracking-wider">
-              Precio Entrada
-            </th>
-            <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 dark:text-gray-400 uppercase tracking-wider">
-              Precio Salida
-            </th>
-            <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 dark:text-gray-400 uppercase tracking-wider">
-              Duración
-            </th>
-            <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 dark:text-gray-400 uppercase tracking-wider">
-              PnL Neto
-            </th>
-            <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 dark:text-gray-400 uppercase tracking-wider">
-              PnL %
+            <th className="px-6 py-3 text-right text-xs font-medium text-gray-500 dark:text-gray-400 uppercase tracking-wider">
+              Resultado
             </th>
           </tr>
         </thead>
-        <tbody className="bg-white dark:bg-gray-800 divide-y divide-gray-200 dark:divide-gray-700">
-          {trades.map((trade, index) => (
-            <tr
-              key={trade.id || `trade-${index}`}
-              className={`hover:bg-gray-50 dark:hover:bg-gray-700 transition-colors ${
-                trade.is_pending ? 'bg-purple-50 dark:bg-purple-900/20' :
-                trade.is_orphan ? 'bg-orange-50 dark:bg-orange-900/20' : 
-                (!trade.exit_datetime ? 'bg-blue-50 dark:bg-blue-900/20' : '')
-              }`}
-            >
-              <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-900 dark:text-white align-top">
-                <div className="flex flex-col gap-1">
-                  <div className="flex items-center gap-2">
-                    <span className="font-medium">{formatDate(trade.entry_datetime)}</span>
-                    <OriginatorBadge originator={trade.originator} />
-                  </div>
-                  <span className={`text-xs font-bold ${trade.entry_side === 'buy' ? 'text-green-600' : 'text-red-600'}`}>
-                    {trade.entry_side.toUpperCase()}
-                  </span>
-                  <TypeTagBadges tags={trade.entry_order_tags} variant="entry" />
-                </div>
-              </td>
-              <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-900 dark:text-white align-top">
-                <div className="flex flex-col gap-1">
-                  {trade.is_pending ? (
-                    <span className="px-2 py-1 bg-purple-100 dark:bg-purple-800 text-purple-700 dark:text-purple-200 rounded text-xs font-bold">
-                      PENDING {trade.order_type}
-                    </span>
-                  ) : trade.exit_datetime ? (
+        <tbody className="bg-white dark:bg-slate-950 divide-y divide-gray-100 dark:divide-gray-800">
+          {trades.map((trade) => {
+            const isExpanded = expandedRows.has(trade.id)
+            const hasFills = (trade.entry_fills?.length || 0) > 0 || (trade.exit_fills?.length || 0) > 0
+
+            return (
+              <React.Fragment key={trade.id}>
+                <tr 
+                  className={`group hover:bg-gray-50/50 dark:hover:bg-gray-900/30 transition-colors cursor-pointer ${isExpanded ? 'bg-indigo-50/10 dark:bg-indigo-900/5' : ''}`}
+                  onClick={() => toggleRow(trade.id)}
+                >
+                  <td className="px-4 py-4 text-center">
+                    {hasFills && (
+                      isExpanded ? <ChevronDown className="w-4 h-4 text-indigo-500" /> : <ChevronRight className="w-4 h-4 text-gray-400" />
+                    )}
+                  </td>
+                  
+                  {/* Entrada */}
+                  <td className="px-6 py-4">
                     <div className="flex flex-col">
-                      <span className="font-medium">{formatDate(trade.exit_datetime)}</span>
-                      {trade.exit_side && (
-                        <span className={`text-xs ${trade.exit_side === 'buy' ? 'text-green-600' : 'text-red-600'}`}>
-                          {trade.exit_side.toUpperCase()}
+                      <div className="flex items-center gap-2">
+                        <span className="text-sm font-bold text-gray-900 dark:text-white uppercase">
+                          {trade.symbol}
                         </span>
-                      )}
-                    </div>
-                  ) : trade.conditional_exit ? (
-                    <div className="flex flex-col gap-0.5">
-                      <span className="text-xs font-semibold text-amber-700 dark:text-amber-300">
-                        CONDITIONAL · {trade.conditional_exit.order_type}
-                      </span>
-                      <span className="text-xs text-gray-600 dark:text-gray-300">
-                        Trigger {formatPrice(trade.conditional_exit.trigger_price)} ·{' '}
-                        {trade.conditional_exit.side.toUpperCase()}
-                      </span>
-                      {trade.conditional_exit.conditional_kind ? (
-                        <span className="text-[10px] uppercase text-gray-500 dark:text-gray-400">
-                          {trade.conditional_exit.conditional_kind.replace(/_/g, ' ')}
+                        <OriginatorBadge originator={trade.originator} />
+                      </div>
+                      <div className="flex items-center gap-2 mt-1">
+                        <span className="text-xs font-medium text-emerald-600 dark:text-emerald-400 uppercase">
+                          {trade.entry_side}
                         </span>
-                      ) : null}
-                      <span className="text-[10px] text-gray-400 dark:text-gray-500 font-mono">
-                        algo #{trade.conditional_exit.algo_id}
-                      </span>
+                        <span className="text-xs text-gray-500 dark:text-gray-400">
+                          @ {formatPrice(trade.entry_price)}
+                        </span>
+                      </div>
+                      <div className="text-[10px] text-gray-400 dark:text-gray-500 mt-1">
+                        {formatDate(trade.entry_datetime)}
+                      </div>
+                      <div className="mt-1 flex items-center gap-2">
+                        <OrderIdBadge id={trade.entry_order_id} />
+                        <TypeTagBadges tags={trade.entry_order_tags} variant="entry" />
+                      </div>
                     </div>
-                  ) : (
-                    <span className="text-gray-500 italic">
-                      {trade.is_orphan ? 'Orphan (unmatched)' : 'Open (floating)'}
-                    </span>
-                  )}
-                  <TypeTagBadges tags={trade.exit_order_tags} variant="exit" />
-                </div>
-              </td>
-              <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-900 dark:text-white">
-                {formatAmount(trade.entry_amount)}
-              </td>
-              <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-900 dark:text-white">
-                {formatPrice(trade.entry_price)}
-              </td>
-              <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-900 dark:text-white">
-                {trade.is_pending ? (
-                  <span className="font-bold text-purple-600 dark:text-purple-400">
-                    {formatPrice(trade.entry_price)}
-                  </span>
-                ) : (
-                  formatPrice(trade.exit_price)
-                )}
-              </td>
-              <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500 dark:text-gray-400">
-                {trade.duration_seconds > 0 ? formatDuration(trade.duration_seconds) : <span className="text-gray-500">—</span>}
-              </td>
-              <td className="px-6 py-4 whitespace-nowrap text-sm">
-                {trade.is_pending ? (
-                  <span className="text-gray-400">—</span>
-                ) : (
-                  <div className="flex flex-col">
-                    <span className={`font-semibold ${trade.pnl_net >= 0 ? 'text-green-600' : 'text-red-600'}`}>
-                      {formatPrice(trade.pnl_net)}
-                    </span>
-                    {!trade.exit_datetime && (
-                      <div className="flex gap-2 mt-1 text-[10px]">
-                        {trade.tp_pnl !== null && trade.tp_pnl !== undefined ? (
-                          <span className="text-green-500 bg-green-50 dark:bg-green-900/30 px-1 rounded border border-green-200 dark:border-green-800">
-                            TP: {formatPrice(trade.tp_pnl)}
+                  </td>
+
+                  {/* Salida */}
+                  <td className="px-6 py-4">
+                    {trade.exit_side ? (
+                      <div className="flex flex-col">
+                        <div className="flex items-center gap-2 mt-1">
+                          <span className="text-xs font-medium text-amber-600 dark:text-amber-400 uppercase">
+                            {trade.exit_side}
                           </span>
-                        ) : (
-                          <span className="text-gray-400 bg-gray-100 dark:bg-gray-800 px-1 rounded border border-gray-200 dark:border-gray-700" title="No TP order found">
-                            TP: ⚠️
+                          <span className="text-xs text-gray-500 dark:text-gray-400">
+                            @ {formatPrice(trade.exit_price || 0)}
                           </span>
-                        )}
-                        {trade.sl_pnl !== null && trade.sl_pnl !== undefined ? (
-                          <span className="text-red-500 bg-red-50 dark:bg-red-900/30 px-1 rounded border border-red-200 dark:border-red-800">
-                            SL: {formatPrice(trade.sl_pnl)}
-                          </span>
-                        ) : (
-                          <span className="text-gray-400 bg-gray-100 dark:bg-gray-800 px-1 rounded border border-gray-200 dark:border-gray-700" title="No SL order found">
-                            SL: ⚠️
-                          </span>
-                        )}
+                        </div>
+                        <div className="text-[10px] text-gray-400 dark:text-gray-500 mt-1">
+                          {formatDate(trade.exit_datetime || '')}
+                        </div>
+                        <div className="mt-1 flex items-center gap-2">
+                          <OrderIdBadge id={trade.exit_order_id} />
+                          <TypeTagBadges tags={trade.exit_order_tags} variant="exit" />
+                        </div>
+                      </div>
+                    ) : (
+                      <div className="text-xs italic text-gray-400 dark:text-gray-500 flex items-center gap-2">
+                         <span className="inline-block w-2 h-2 rounded-full bg-emerald-500/50 animate-pulse" />
+                         Abierto / Parcial
                       </div>
                     )}
-                  </div>
+                  </td>
+
+                  {/* Métricas */}
+                  <td className="px-6 py-4">
+                    <div className="flex flex-col">
+                      <div className="text-sm font-medium text-gray-700 dark:text-gray-300">
+                        {formatAmount(trade.entry_amount)}
+                      </div>
+                      <div className="text-xs text-gray-400 dark:text-gray-500">
+                        Fee: {formatAmount(trade.entry_fee + (trade.exit_fee || 0))} 
+                      </div>
+                      {trade.duration_seconds > 0 && (
+                        <div className="text-[10px] text-gray-400 dark:text-gray-500 mt-1 bg-gray-50 dark:bg-gray-900 px-1 py-0.5 rounded w-fit">
+                          Duración: {formatDuration(trade.duration_seconds)}
+                        </div>
+                      )}
+                    </div>
+                  </td>
+
+                  {/* Resultado (PnL) */}
+                  <td className="px-6 py-4 text-right">
+                    <div className="flex flex-col items-end">
+                      <div className={`text-sm font-bold ${trade.pnl_net >= 0 ? 'text-emerald-500' : 'text-rose-500'}`}>
+                        {trade.pnl_net >= 0 ? '+' : ''}{formatPrice(trade.pnl_net)}
+                      </div>
+                      <div className={`text-xs font-semibold px-1 rounded ${trade.pnl_percentage >= 0 ? 'bg-emerald-50 text-emerald-600 dark:bg-emerald-900/30' : 'bg-rose-50 text-rose-600 dark:bg-rose-900/30'}`}>
+                        {trade.pnl_percentage >= 0 ? '+' : ''}{formatPercentage(trade.pnl_percentage)}
+                      </div>
+                    </div>
+                  </td>
+                </tr>
+
+                {/* Detalle Expandible (Total Transparency) */}
+                {isExpanded && hasFills && (
+                  <tr className="bg-slate-50/30 dark:bg-slate-900/20">
+                    <td colSpan={5} className="px-12 py-2">
+                      <div className="flex flex-col gap-2">
+                        <FillsSubTable fills={trade.entry_fills} title="Entrada" />
+                        <FillsSubTable fills={trade.exit_fills} title="Salida" />
+                      </div>
+                    </td>
+                  </tr>
                 )}
-              </td>
-              <td className={`px-6 py-4 whitespace-nowrap text-sm font-semibold ${
-                trade.is_pending ? 'text-gray-400' :
-                (trade.pnl_percentage >= 0 ? 'text-green-600' : 'text-red-600')
-              }`}>
-                {trade.is_pending ? '—' : formatPercentage(trade.pnl_percentage)}
-              </td>
-            </tr>
-          ))}
+              </React.Fragment>
+            )
+          })}
         </tbody>
       </table>
     </div>

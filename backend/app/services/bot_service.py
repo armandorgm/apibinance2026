@@ -25,18 +25,29 @@ class TradingBot:
         if self.is_running:
             return
         self.is_running = True
+        
+        # Start Stream listener (Orders logic in background)
+        from app.core.stream_service import stream_manager
+        await stream_manager.start()
+        
         self._task = asyncio.create_task(self._run_loop())
-        print(f"[BOT] Started Pipeline Engine")
+        print(f"[BOT] Started Pipeline Engine & Stream Service")
 
     async def stop(self):
         self.is_running = False
+        
+        # Stop Stream listener
+        from app.core.stream_service import stream_manager
+        await stream_manager.stop()
+        
         if self._task:
             self._task.cancel()
             try:
                 await self._task
             except asyncio.CancelledError:
                 pass
-        print("[BOT] Stopped Pipeline Engine")
+        print("[BOT] Stopped Pipeline Engine & Stream Service")
+
 
     async def _run_loop(self):
         while self.is_running:
@@ -69,9 +80,9 @@ class TradingBot:
             
         # 1. Gather global minimal context (e.g., current price for general logging or offset)
         try:
-            ticker = await exchange_manager.execute_with_retry("fetchTicker", symbol)
-            current_price = ticker.get('last') or 0.0
-        except:
+            ticker = await exchange_manager.fetch_ticker(symbol)
+            current_price = ticker.get('last', 0.0)
+        except Exception as e:
             current_price = 0.0
 
         # print(f"[BOT] Evaluating Pipelines for {symbol} at {datetime.utcnow()}")
@@ -86,6 +97,23 @@ class TradingBot:
             "results": results
         }
 
+    async def evaluate_stream_tick(self, symbol: str, current_price: float):
+        """Called directly by the StreamManager when a new tick is received."""
+        # Use PipelineEngine to specifically process ON_TICK or CHASE pipelines
+        # Currently, Action handles its own chase logic so we route it through engine.
+        from app.services.strategy_engine import PipelineEngine
+        try:
+            await self.engine.evaluate_stream_event(symbol, current_price=current_price)
+        except Exception as e:
+            print(f"[BOT] Error evaluating stream tick: {e}")
+
+    async def evaluate_stream_order(self, order_data: Dict[str, Any]):
+        """Called directly by the StreamManager when an order updates."""
+        try:
+            await self.engine.evaluate_stream_order(order_data)
+        except Exception as e:
+            print(f"[BOT] Error evaluating stream order update: {e}")
 
 # Global bot instance
 bot_instance = TradingBot()
+
