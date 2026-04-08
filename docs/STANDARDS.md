@@ -48,3 +48,19 @@ Para evitar fallos de ejecución en este entorno específico:
 
 > [!IMPORTANT]
 > El incumplimiento de estas reglas, especialmente la de **no perder conocimiento** en `PROJECT_MAP.md`, se considera un fallo crítico de ejecución.
+
+## 🧪 7. Ejecución de Pruebas Unificadas
+Para garantizar que las pruebas se ejecuten con todas las dependencias necesarias (`pytest`, `sqlmodel`, etc.), es **obligatorio** utilizar el intérprete del entorno virtual (`.venv`).
+
+### ❌ Forma INCORRECTA (Usa el Python del sistema, faltarán módulos):
+```bash
+python backend/tests/run_all.py
+```
+
+### ✅ Forma CORRECTA (PowerShell - Asegura el uso del .venv):
+```powershell
+& 'f:/apibinance2026/.venv/Scripts/python.exe' backend/tests/run_all.py
+```
+
+---
+*Última actualización: 2026-04-08 | Integración de Expandable Trades funcional.*
