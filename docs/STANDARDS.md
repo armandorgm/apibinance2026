@@ -37,12 +37,14 @@ El archivo `docs/PROJECT_MAP.md` es el "Cerebro Colectivo" del proyecto y debe p
 - **PnL**: El cálculo neto debe descontar siempre todas las comisiones.
 - **Latencia**: Al modificar la API local, esperar 5-10 segundos antes de ejecutar tests para permitir el reload del runtime.
 
-## 🛠️ 6. CLI y Sintaxis (Entorno Windows/PowerShell)
-Para evitar fallos de ejecución en este entorno específico:
-1. **Separadores**: Usar `;` en lugar de `&&` para concatenar comandos (PowerShell nativo).
-2. **Quoting en Python**: Para comandos `python -c`, usar comillas dobles `"` para el bloque de código y comillas simples `'` internas, o viceversa, asegurando que PowerShell no interpole variables inesperadas.
-3. **Paths**: Siempre usar `\` para rutas locales y preferir rutas absolutas o relativas al root mediante `Cwd`.
-4. **Logs**: Para monitoreo en tiempo real, usar `Get-Content <file> -Wait` (equivalente a `tail -f`).
+## 🛠️ 6. CLI y Sintaxis (Entorno Preferido: Git Bash)
+Para garantizar la máxima precisión y compatibilidad con agentes de IA, el entorno de ejecución estándar es **Git Bash**.
+
+1. **Operadores de Cadena**: Usar `&&` para encadenar comandos exitosos y `||` para manejo de errores (Estándar POSIX).
+2. **Paths**: Siempre usar barras diagonales `/` para rutas (ej: `backend/app/main.py`), incluso en Windows, ya que Git Bash las traduce correctamente. evitar la contra-barra `\` para prevenir errores de escape.
+3. **Quoting**: Usar comillas simples `'` para strings literales y comillas dobles `"` cuando se requiera interpolación de variables.
+4. **Herramientas**: Aprovechar las utilidades estándar de Bash (`grep`, `find`, `sed`, `awk`) para manipulación de archivos y logs.
+5. **Logs**: Usar `tail -f <file>` para monitoreo en tiempo real.
 5. **Tip de Productividad (Resiliencia)**: Si necesitas encadenar comandos en cualquier versión de PowerShell garantizando el éxito del anterior, usa:
    `command1; if ($?) { command2 }`
    Donde `$?` es una variable booleana que indica el éxito de la última ejecución.
