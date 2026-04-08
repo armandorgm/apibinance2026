@@ -13,8 +13,9 @@ description: Branching strategy and git usage according to GitFlow.
    git merge --no-ff feature/name
    ```
 7. **Archivado de Artefactos**: Antes de finalizar el ciclo, mover los archivos de seguimiento en `.temp/` (como `PLAN_EJECUCION.md`) hacia `docs/logs/feature-name/` para preservar la trazabilidad.
-8. Al finalizar el merge y archivado, eliminar la rama de feature: `git branch -d feature/name`.
-9. Para hotfixes, utilizar `hotfix/name` partiendo de `main`.
+8. **Limpieza Automática**: Tras el archivado, eliminar todo contenido restante en `.temp/` sin consulta previa (ej: `rm -rf .temp/*`).
+9. Al finalizar el merge y archivado, eliminar la rama de feature: `git branch -d feature/name`.
+10. Para hotfixes, utilizar `hotfix/name` partiendo de `main`.
 
 > [!NOTE]
 > Consulte siempre [STANDARDS.md](file:///f:/apibinance2026/docs/STANDARDS.md) para cumplir con los criterios de calidad y documentación antes de cerrar una tarea.

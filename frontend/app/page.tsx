@@ -7,6 +7,7 @@ import { SyncButton } from '@/components/sync-button'
 import { StatsCard } from '@/components/stats-card'
 import { BotMonitor } from '@/components/bot-monitor'
 import { BalanceWidget } from '@/components/balance-widget'
+import { OpenTradesTable } from '@/components/open-trades-table'
 import { useTrades, useStats, useSyncHistoricalTrades } from '@/hooks/use-trades'
 import { formatPrice } from '@/lib/utils'
 import Link from 'next/link'
@@ -216,6 +217,11 @@ export default function Home() {
             </h2>
             <TradeChart trades={trades} />
           </div>
+        )}
+
+        {/* Open Trades Section */}
+        {trades && trades.length > 0 && (
+          <OpenTradesTable trades={trades} />
         )}
 
         {/* Trade Table */}

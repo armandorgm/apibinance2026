@@ -35,6 +35,7 @@ Rastreador de operaciones para Binance Futures con soporte para emparejamiento F
 - `backend/app/services/tracker_logic.py`: Implementa el Patrón Strategy (FIFO, LIFO, ATOMIC) referenciado al cruce de trades puros.
 - `backend/app/api/routes.py`: Endpoints para sync de trades y gestión de balances. Implementa la **Hidratación Dinámica de Fills** para el historial (atomic_fifo) asegurando transparencia total al expandir filas en el frontend.
 - `frontend/components/trade-table.tsx`: Tabla interactiva con soporte para **filas expandibles** y sub-tablas de ejecuciones detalladas (lucide-react).
+- `frontend/components/open-trades-table.tsx`: Visualizador premium de **órdenes pendientes** (Limit, Conditional, Algo) filtradas del historial activo para mayor visibilidad estratégica.
 - `frontend/app/page.tsx`: Orquesta del dashboard incluyendo `BalanceWidget`, `BotMonitor` y filtros dinámicos (como Query Params inyectados hacia useTrades).
 - `backend/app/services/bot_service.py`: Ejecuta órdenes transformando el monto inversión configuado (USD Notional) a cantidad exacta de contratos vía matemática (`Notional / Live Market Price`), pasando por el filtro de CCXT `amount_to_precision` para lograr compatibilidad estricta con Binance eliminando errores `-4164 MIN_NOTIONAL` y `-4111 PRECISION`.
 - `frontend/app/settings/page.tsx`: Vista de control paramétrico estricto para el Bot Autónomo. La UI aclara la lógica de apalancamiento vs input en notional.

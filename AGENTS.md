@@ -139,10 +139,10 @@ Every AI agent working in this repository MUST follow this lifecycle:
 
 ### 1. Execution Plan Lifecycle (`.temp/` folder)
 
-All complex procedures require mandatory real-time traceability inside `.temp/`:
+All complex procedures require **milestone-based traceability** inside `.temp/` to ensure continuity without inducing execution loops:
 
-- **Before (Initial Phase):** Generate `PLAN_EJECUCION.md` with roadmap and objectives.
-- **During (Progress Phase):** Update the file with change logs, intercepted errors, and strategy adjustments.
+- **Before (Initial Phase):** Generate `PLAN_EJECUCION.md` detailing the roadmap and objectives.
+- **During (Progress Phase):** Update the file at **key milestones** (e.g., finishing a module, encountering a major blocker, or changing strategy). *Crucial: Avoid updating after every minor change to prevent high latency or the agent getting stuck.*
 - **After (Closing Phase):** Record the final system state.
 
 **User Sovereignty:** On completion, the agent MUST NOT delete records. It will ask the user:
