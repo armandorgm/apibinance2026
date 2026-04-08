@@ -43,6 +43,9 @@ Para evitar fallos de ejecución en este entorno específico:
 2. **Quoting en Python**: Para comandos `python -c`, usar comillas dobles `"` para el bloque de código y comillas simples `'` internas, o viceversa, asegurando que PowerShell no interpole variables inesperadas.
 3. **Paths**: Siempre usar `\` para rutas locales y preferir rutas absolutas o relativas al root mediante `Cwd`.
 4. **Logs**: Para monitoreo en tiempo real, usar `Get-Content <file> -Wait` (equivalente a `tail -f`).
+5. **Tip de Productividad (Resiliencia)**: Si necesitas encadenar comandos en cualquier versión de PowerShell garantizando el éxito del anterior, usa:
+   `command1; if ($?) { command2 }`
+   Donde `$?` es una variable booleana que indica el éxito de la última ejecución.
 
 ---
 
