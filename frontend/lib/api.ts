@@ -141,6 +141,26 @@ export interface ActivePipeline {
   created_at: string | null
 }
 
+export interface ChaseSimulationRequest {
+  current_price: number
+  order_price: number
+  last_tick_price?: number | null
+  side: string
+  last_update_iso: string
+  cooldown_seconds?: number | null
+  price_threshold?: number | null
+  status: string
+}
+
+export interface ChaseSimulationResponse {
+  status: string
+  order_price: number
+  should_update: boolean
+  action?: string
+  reason: string
+  last_update_iso?: string
+}
+
 export interface BotConfig {
   id: number
   symbol: string
@@ -171,6 +191,27 @@ export interface BotStatus {
     action: string | null
     context: any
   } | null
+}
+
+export interface RepairPreview {
+  symbol: string
+  order_id: string
+  side: string
+  original_price: number
+  amount: number
+  target_buy_price: number
+  profit_percentage: number
+  estimated_buy_fee: number
+  timestamp: number
+  datetime: string
+}
+
+export interface RepairExecuteResponse {
+  success: boolean
+  message: string
+  trade_id: string
+  buy_price: number
+  trades_created: number
 }
 
 export async function fetchTrades(symbol: string, logic: string = 'fifo', sortBy: string = 'recent'): Promise<Trade[]> {
@@ -368,5 +409,38 @@ export async function fetchActivePipelines(): Promise<ActivePipeline[]> {
 export async function stopPipeline(id: number): Promise<void> {
   const response = await fetch(`${API_BASE_URL}/api/bot/active-pipelines/${id}`, { method: 'DELETE' })
   if (!response.ok) throw new Error('Error stopping pipeline')
+}
+
+export async function simulateChase(req: ChaseSimulationRequest): Promise<ChaseSimulationResponse> {
+  const response = await fetch(`${API_BASE_URL}/api/chase/simulate`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(req),
+  })
+  if (!response.ok) {
+    const error = await response.json().catch(() => ({ detail: response.statusText }))
+    throw new Error(error.detail || `Error simulating chase: ${response.statusText}`)
+  }
+  return response.json()
+}
+
+export async function fetchRepairPreview(orderId: string, profitPc: number = 0.5): Promise<RepairPreview> {
+  const response = await fetch(`${API_BASE_URL}/api/trades/repair/preview?order_id=${encodeURIComponent(orderId)}&profit_pc=${profitPc}`)
+  if (!response.ok) {
+    const err = await response.json().catch(() => ({}))
+    throw new Error(err.detail || 'Error fetching repair preview')
+  }
+  return response.json()
+}
+
+export async function executeRepair(orderId: string, profitPc: number = 0.5): Promise<RepairExecuteResponse> {
+  const response = await fetch(`${API_BASE_URL}/api/trades/repair/execute?order_id=${encodeURIComponent(orderId)}&profit_pc=${profitPc}`, {
+    method: 'POST'
+  })
+  if (!response.ok) {
+    const err = await response.json().catch(() => ({}))
+    throw new Error(err.detail || 'Error executing repair')
+  }
+  return response.json()
 }
 

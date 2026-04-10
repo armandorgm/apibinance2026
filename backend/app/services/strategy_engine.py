@@ -113,7 +113,5 @@ class PipelineEngine:
                 return
 
             from .pipeline_engine.actions import AdaptiveOTOScalingAction
-            if status == 'closed':
-                await AdaptiveOTOScalingAction.handle_fill(process, session)
-            elif status in ['canceled', 'rejected']:
-                await AdaptiveOTOScalingAction.handle_abort(process, session)
+            # Delegate to unified handler that manages Retry/Fill/Abort logic
+            await AdaptiveOTOScalingAction.handle_order_event(process, order_data, session)

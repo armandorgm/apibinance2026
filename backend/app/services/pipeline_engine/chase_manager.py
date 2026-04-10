@@ -15,16 +15,25 @@ class ChaseDecisionEngine:
     PRICE_DIFF_THRESHOLD = 0.0005 # 0.05%
     
     @staticmethod
-    def should_update(process: BotPipelineProcess, current_price: float) -> bool:
+    def should_update(
+        process: BotPipelineProcess, 
+        current_price: float, 
+        cooldown_seconds: Optional[int] = None,
+        price_threshold: Optional[float] = None
+    ) -> bool:
         """
         Evaluates if the opening order should be replaced based on time and price.
         """
+        # 0. Configuration (Use provided params or defaults)
+        cooldown = cooldown_seconds if cooldown_seconds is not None else ChaseDecisionEngine.COOLDOWN_SECONDS
+        threshold = price_threshold if price_threshold is not None else ChaseDecisionEngine.PRICE_DIFF_THRESHOLD
+
         # 1. Time Throttling (Cooldonw)
         # Use updated_at to track last execution
         last_update = process.updated_at or process.created_at
         elapsed = (datetime.utcnow() - last_update).total_seconds()
         
-        if elapsed < ChaseDecisionEngine.COOLDOWN_SECONDS:
+        if elapsed < cooldown:
             # logger.debug(f"[CHASE] Cooldown active for {process.symbol}. {elapsed:.1f}s elapsed.")
             return False
             
@@ -35,7 +44,7 @@ class ChaseDecisionEngine:
             
         price_diff_percent = abs(current_price - process.last_tick_price) / process.last_tick_price
         
-        if price_diff_percent < ChaseDecisionEngine.PRICE_DIFF_THRESHOLD:
+        if price_diff_percent < threshold:
             # logger.debug(f"[CHASE] Price move too small for {process.symbol} ({price_diff_percent:.5%})")
             return False
             

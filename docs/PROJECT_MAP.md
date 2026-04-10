@@ -20,12 +20,13 @@ Rastreador de operaciones para Binance Futures con soporte para emparejamiento F
   - `ruleEngine.ts`: Motor funcional de evaluación de estrategias.
 - `docs/incidents/`: Registro de incidentes y resoluciones.
 - `docs/MATCHING_SYSTEM.md`: Arquitectura detallada del sistema de emparejamiento (Strategy pattern, FIFO/LIFO/Atomic).
+- `docs/GLOSSARY.md`: Glosario oficial de términos y nomenclatura del proyecto (Posición, Orden B/C, Fill).
 - `frontend/app/exchange-logs/`: Monitor interactivo central para reportes y respuestas CCXT.
 
 ## Flujos Críticos de Datos
-1. **Sincronización**: Binance API -> `exchange.py` -> `ensure_orders_exist` -> `orders` / `fills` tables -> `tracker_logic.py` -> `trades` table.
-2. **Visualización**: `routes.py` (con hidratación de fills) -> `api.ts` -> React Query -> `trade-table.tsx` (expandible) / `trade-chart.tsx`.
-3. **Relación de Datos**: 1 Order -> N Fills (Executions). Agrupación en `tracker_logic.py` e hidratación dinámica en `routes.py`.
+1. **Sincronización**: Binance API -> `exchange.py` -> `ensure_orders_exist` -> `basic_orders` / `conditional_orders` / `fills` -> `tracker_logic.py` -> `trades` table.
+2. **Visualización**: `routes.py` (Unión virtual de ódeness + hidratación de fills) -> `api.ts` -> React Query -> `trade-table.tsx` (expandible) / `trade-chart.tsx`.
+3. **Relación de Datos**: 1 Orden (Virtual) -> N Fills (Executions). Agrupación en `tracker_logic.py` e hidratación dinámica en `routes.py`.
 4. **Formateo**: Precios brutos -> `lib/utils.ts` (`formatPrice`) -> UI.
 4. **Ejecución Autónoma**: `BotConfig` (DB) -> `BotService` (Background Task) -> CCXT -> Binance API -> `BotSignal` (DB).
 

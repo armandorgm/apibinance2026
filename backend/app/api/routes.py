@@ -9,7 +9,7 @@ from app.core.logger import logger
 from app.services.bot_service import bot_instance
 from sqlmodel import select, Session
 from pydantic import BaseModel, ConfigDict
-from app.db.database import Fill, Trade, BotSignal, BotConfig, ExchangeLog, Order, BotPipeline, get_session_direct, create_db_and_tables, engine, Originator, OrderSource
+from app.db.database import Fill, Trade, BotSignal, BotConfig, ExchangeLog, BasicOrder, ConditionalOrder, BotPipeline, get_session_direct, create_db_and_tables, engine, Originator, OrderSource
 from app.services.tracker_logic import TradeTracker
 from app.core.exchange import exchange_manager
 from app.services.history_formatter import TradeResponseFormatter, SortByEntryDateDesc, SortByEntryDateAsc, SortByPnLDesc
@@ -145,6 +145,24 @@ class OrderResponse(BaseModel):
     # Binance FAPI createTime (ms); solo CONDITIONAL suele tenerlo para cruce con fills
     create_time_ms: Optional[int] = None
 
+class ChaseSimulationRequest(BaseModel):
+    current_price: float
+    order_price: float # Current virtual order price
+    last_tick_price: Optional[float] = None
+    side: str = "buy"
+    last_update_iso: str # ISO format for mock time
+    cooldown_seconds: Optional[int] = None
+    price_threshold: Optional[float] = None
+    status: str = "CHASING" # CHASING, FILLED
+
+class ChaseSimulationResponse(BaseModel):
+    status: str
+    order_price: float
+    should_update: bool
+    action: Optional[str] = None
+    reason: str
+    last_update_iso: Optional[str] = None
+
 # --- Domain Logic Helpers ---
 
 async def ensure_orders_exist(symbol: str, order_ids: Set[str], session: Session):
@@ -155,9 +173,10 @@ async def ensure_orders_exist(symbol: str, order_ids: Set[str], session: Session
     if not order_ids:
         return
     
-    # Filter IDs that already exist in DB
-    existing_stmt = select(Order.id).where(Order.id.in_(list(order_ids)))
-    existing_ids = set(session.exec(existing_stmt).all())
+    # Filter IDs that already exist in DB (Both tables)
+    existing_basic = set(session.exec(select(BasicOrder.id).where(BasicOrder.id.in_(list(order_ids)))).all())
+    existing_cond = set(session.exec(select(ConditionalOrder.id).where(ConditionalOrder.id.in_(list(order_ids)))).all())
+    existing_ids = existing_basic.union(existing_cond)
     missing_ids = order_ids - existing_ids
     
     if not missing_ids:
@@ -190,27 +209,46 @@ async def ensure_orders_exist(symbol: str, order_ids: Set[str], session: Session
             if raw:
                 raw['_source'] = 'standard'
                 domain_order = OrderFactory.create(raw, logged_ids)
-                db_o = Order(
-                    id=domain_order.id,
-                    symbol=domain_order.symbol,
-                    side=domain_order.side,
-                    amount=domain_order.amount,
-                    price=domain_order.price,
-                    status=domain_order.status,
-                    datetime=domain_order.datetime,
-                    originator=domain_order.originator,
-                    source=domain_order.source,
-                    can_be_entry=domain_order.can_be_entry(),
-                    is_bot_logged=domain_order.is_bot_logged,
-                    order_type=getattr(domain_order, 'order_type', "LIMIT")
-                )
+                
+                # Enrutamiento basado en Source (Fidelidad de origen en ID crudo)
+                if domain_order.source == OrderSource.STANDARD:
+                    db_o = BasicOrder(
+                        id=domain_order.raw_id,
+                        symbol=domain_order.symbol,
+                        side=domain_order.side,
+                        amount=domain_order.amount,
+                        price=domain_order.price,
+                        status=domain_order.status,
+                        datetime=domain_order.datetime,
+                        originator=domain_order.originator,
+                        source=domain_order.source,
+                        can_be_entry=domain_order.can_be_entry(),
+                        is_bot_logged=domain_order.is_bot_logged,
+                        order_type=getattr(domain_order, 'order_type', "LIMIT")
+                    )
+                else:
+                    db_o = ConditionalOrder(
+                        id=domain_order.raw_id,
+                        symbol=domain_order.symbol,
+                        side=domain_order.side,
+                        amount=domain_order.amount,
+                        price=domain_order.price,
+                        status=domain_order.status,
+                        datetime=domain_order.datetime,
+                        originator=domain_order.originator,
+                        source=domain_order.source,
+                        can_be_entry=domain_order.can_be_entry(),
+                        is_bot_logged=domain_order.is_bot_logged,
+                        order_type=getattr(domain_order, 'order_type', "STOP_MARKET"),
+                        create_time_ms=getattr(domain_order, 'create_time_ms', None),
+                        conditional_kind=getattr(domain_order, 'conditional_kind', None)
+                    )
                 session.add(db_o)
             else:
                 # 2. If not found, it might be an Algo order that was already filled
-                # (Binance Algo history is harder to fetch by ID individually)
                 # For now, create a placeholder if missing
-                print(f"[SYNC] Order {oid} not found on Binance Standard API. Creating placeholder.")
-                db_o = Order(
+                print(f"[SYNC] Order {oid} not found on Binance Standard API. Creating placeholder in BasicOrder.")
+                db_o = BasicOrder(
                     id=oid,
                     symbol=symbol,
                     side="unknown",
@@ -270,13 +308,28 @@ async def get_trade_history(symbol: str = "BTC/USDT", logic: str = "fifo", sort_
                 statement = select(Fill).where(Fill.symbol == symbol).order_by(Fill.timestamp)
                 fills = session.exec(statement).all()
             matched_trades = tracker.match_trades(fills, strategy)
-            matched_trades.sort(key=lambda x: x['entry_timestamp'], reverse=True)
+            # Batch resolve prefixes for matched trades (Fills based)
+            all_ids = set()
+            for t in matched_trades:
+                if t.get('entry_order_id'): all_ids.add(t['entry_order_id'])
+                if t.get('exit_order_id'): all_ids.add(t['exit_order_id'])
+            
+            with get_session_direct() as session:
+                basics = set(session.exec(select(BasicOrder.id).where(BasicOrder.id.in_(list(all_ids)))).all())
+                # If not basic, we assume conditional for prefixing 'C'
+            
+            def prefix_id(oid):
+                if not oid: return None
+                return f"B{oid}" if oid in basics else f"C{oid}"
+
             closed = [
                 TradeResponse(
                     **{
                         **t,
                         'id': i,
                         'created_at': t['entry_datetime'],
+                        'entry_order_id': prefix_id(t.get('entry_order_id')),
+                        'exit_order_id': prefix_id(t.get('exit_order_id')),
                         'entry_order_tags': tags_from_binance_order_type(t.get('entry_order_type')),
                         'exit_order_tags': tags_from_binance_order_type(t.get('exit_order_type')),
                     }
@@ -298,6 +351,13 @@ async def get_trade_history(symbol: str = "BTC/USDT", logic: str = "fifo", sort_
                     if t.entry_order_id: all_order_ids.add(t.entry_order_id)
                     if t.exit_order_id: all_order_ids.add(t.exit_order_id)
                 
+                # Batch resolve prefixes for trades from DB
+                basics = set(session.exec(select(BasicOrder.id).where(BasicOrder.id.in_(list(all_order_ids)))).all())
+                
+                def prefix_id(oid):
+                    if not oid: return None
+                    return f"B{oid}" if oid in basics else f"C{oid}"
+
                 # Batch fetch all relevant fills
                 fill_map = {}
                 if all_order_ids:
@@ -329,6 +389,8 @@ async def get_trade_history(symbol: str = "BTC/USDT", logic: str = "fifo", sort_
                 TradeResponse(
                     **{
                         **trade.model_dump(),
+                        'entry_order_id': prefix_id(trade.entry_order_id),
+                        'exit_order_id': prefix_id(trade.exit_order_id),
                         'entry_order_tags': tags_from_binance_order_type(trade.entry_order_type),
                         'exit_order_tags': tags_from_binance_order_type(trade.exit_order_type),
                         'entry_fills': get_fills_for_ui(trade.entry_order_id),
@@ -406,6 +468,29 @@ async def get_trade_history(symbol: str = "BTC/USDT", logic: str = "fifo", sort_
             filter_conditional_algo_orders(open_orders)
         )
 
+        def to_raw_id(oid):
+            if not oid: return None
+            s_oid = str(oid)
+            if s_oid.startswith('B') or s_oid.startswith('C'):
+                return s_oid[1:]
+            return s_oid
+
+        # Collect all IDs for live/pending items to resolve prefixes (using RAW IDs for DB query)
+        unrealized_ids = {to_raw_id(op.get('entry_order_id')) for op in open_positions if op.get('entry_order_id')}
+        pending_ids = {to_raw_id(order.id) for order in open_orders}
+        all_live_ids = unrealized_ids.union(pending_ids)
+        
+        with get_session_direct() as session:
+            live_basics = set(session.exec(select(BasicOrder.id).where(BasicOrder.id.in_(list(all_live_ids)))).all())
+            
+        def live_prefix_id(oid):
+            if not oid: return None
+            s_oid = str(oid)
+            # If already prefixed, don't prefix again
+            if s_oid.startswith('B') or s_oid.startswith('C'):
+                return s_oid
+            return f"B{s_oid}" if s_oid in live_basics else f"C{s_oid}"
+
         if open_positions:
             try:
                 ticker = await exchange_manager.fetch_ticker(symbol)
@@ -475,8 +560,11 @@ async def get_trade_history(symbol: str = "BTC/USDT", logic: str = "fifo", sort_
                 else:
                     exit_tags = legacy_exit_tags if legacy_exit_tags else ["FLOATING"]
 
+                # Unique synthetic ID for performance/React keys
+                unrealized_id = -int(str(op.get('entry_order_id') or '0').replace('B', '').replace('C', '') or abs(hash(str(op['entry_timestamp'])))) % 1000000
+                
                 unrealized.append(TradeResponse(
-                    id=0,
+                    id=unrealized_id,
                     symbol=symbol,
                     entry_side=entry_side,
                     entry_price=entry_price,
@@ -496,16 +584,21 @@ async def get_trade_history(symbol: str = "BTC/USDT", logic: str = "fifo", sort_
                     sl_pnl=sl_pnl_val,
                     conditional_exit=cond_exit_info,
                     is_orphan=bool(op.get('is_orphan', False)),
+                    entry_order_id=live_prefix_id(op.get('entry_order_id')),
                     entry_order_tags=entry_tags,
                     exit_order_tags=exit_tags,
+                    entry_fills=op.get('entry_fills', []), # Enable UI Expansion for Open Positions
                 ))
                 
         # Append unmatched open orders as standalone Pending Rows
         standalone_pending = []
         for order in open_orders:
             if order.id not in matched_order_ids:
+                # Unique synthetic ID for pending orders
+                pending_id = -int(str(order.id).replace('B', '').replace('C', '') or abs(hash(str(order.datetime)))) % 1000000
+                
                 standalone_pending.append(TradeResponse(
-                    id=0,
+                    id=pending_id,
                     symbol=symbol,
                     entry_side=(order.side or 'buy').lower(),
                     entry_price=order.price,
@@ -523,6 +616,7 @@ async def get_trade_history(symbol: str = "BTC/USDT", logic: str = "fifo", sort_
                     created_at=order.datetime,
                     is_pending=True,
                     order_type=order.type,
+                    entry_order_id=live_prefix_id(order.id),
                     entry_order_tags=tags_from_open_order_response(order),
                     exit_order_tags=["PENDING"],
                 ))
@@ -649,6 +743,31 @@ async def sync_trades(symbol: str = "BTC/USDT", logic: str = "atomic_fifo"):
     
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Error syncing trades: {str(e)}")
+
+
+# --- Repair Mechanism Endpoints ---
+
+@router.get("/trades/repair/preview")
+async def get_repair_preview(order_id: str, profit_pc: float = 0.5):
+    """
+    Get a preview of the synthetic buy calculations for an orphan sell.
+    """
+    try:
+        from app.services.repair_service import RepairService
+        return RepairService.get_repair_preview(order_id, profit_pc)
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+@router.post("/trades/repair/execute")
+async def execute_repair(order_id: str, profit_pc: float = 0.5):
+    """
+    Execute the repair action (SOLID).
+    """
+    try:
+        from app.services.repair_service import RepairService
+        return await RepairService.execute_repair(order_id, profit_pc)
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=str(e))
 
 
 @router.post("/sync/historical", response_model=SyncResponse)
@@ -1001,30 +1120,53 @@ async def get_open_orders(symbol: Optional[str] = None):
                 # Use Domain Factory
                 domain_order = OrderFactory.create(raw, logged_order_ids)
                 
-                # Persistence (Upsert)
-                # First check if exists
-                stmt = select(Order).where(Order.id == domain_order.id)
-                db_order = session.exec(stmt).first()
-                if not db_order:
-                    db_order = Order(
-                        id=domain_order.id,
-                        symbol=domain_order.symbol,
-                        side=domain_order.side,
-                        amount=domain_order.amount,
-                        price=domain_order.price,
-                        status=domain_order.status,
-                        datetime=domain_order.datetime,
-                        originator=domain_order.originator,
-                        source=domain_order.source,
-                        can_be_entry=domain_order.can_be_entry(),
-                        is_bot_logged=domain_order.is_bot_logged,
-                        order_type=getattr(domain_order, 'order_type', "LIMIT")
-                    )
-                    session.add(db_order)
+                # Persistence (Upsert) - Enrutamiento inteligente a tabla física
+                if domain_order.source == OrderSource.STANDARD:
+                    stmt = select(BasicOrder).where(BasicOrder.id == domain_order.raw_id)
+                    db_order = session.exec(stmt).first()
+                    if not db_order:
+                        db_order = BasicOrder(
+                            id=domain_order.raw_id,
+                            symbol=domain_order.symbol,
+                            side=domain_order.side,
+                            amount=domain_order.amount,
+                            price=domain_order.price,
+                            status=domain_order.status,
+                            datetime=domain_order.datetime,
+                            originator=domain_order.originator,
+                            source=domain_order.source,
+                            can_be_entry=domain_order.can_be_entry(),
+                            is_bot_logged=domain_order.is_bot_logged,
+                            order_type=getattr(domain_order, 'order_type', "LIMIT")
+                        )
+                        session.add(db_order)
+                    else:
+                        db_order.status = domain_order.status
+                        db_order.is_bot_logged = domain_order.is_bot_logged
                 else:
-                    # Update status
-                    db_order.status = domain_order.status
-                    db_order.is_bot_logged = domain_order.is_bot_logged
+                    stmt = select(ConditionalOrder).where(ConditionalOrder.id == domain_order.raw_id)
+                    db_order = session.exec(stmt).first()
+                    if not db_order:
+                        db_order = ConditionalOrder(
+                            id=domain_order.raw_id,
+                            symbol=domain_order.symbol,
+                            side=domain_order.side,
+                            amount=domain_order.amount,
+                            price=domain_order.price,
+                            status=domain_order.status,
+                            datetime=domain_order.datetime,
+                            originator=domain_order.originator,
+                            source=domain_order.source,
+                            can_be_entry=domain_order.can_be_entry(),
+                            is_bot_logged=domain_order.is_bot_logged,
+                            order_type=getattr(domain_order, 'order_type', "STOP_MARKET"),
+                            create_time_ms=getattr(domain_order, 'create_time_ms', None),
+                            conditional_kind=getattr(domain_order, 'conditional_kind', None)
+                        )
+                        session.add(db_order)
+                    else:
+                        db_order.status = domain_order.status
+                        db_order.is_bot_logged = domain_order.is_bot_logged
                 
                 orders.append(OrderResponse(
                     id=domain_order.id,
@@ -1187,10 +1329,17 @@ async def delete_pipeline(pipeline_id: int):
 class ManualActionRequest(BaseModel):
     symbol: str
     action_type: str
+    side: Optional[str] = None
+    amount: Optional[float] = None
+    cooldown: Optional[int] = None
+    threshold: Optional[float] = None
     
 @router.post("/bot/manual-action")
 async def trigger_manual_action(req: ManualActionRequest):
     try:
+        # Normalize symbol at the very beginning to CCXT standard
+        req.symbol = await exchange_manager.normalize_symbol(req.symbol)
+        
         from app.services.pipeline_engine.actions import ACTIONS
         if req.action_type not in ACTIONS:
             raise HTTPException(status_code=400, detail="Action not found")
@@ -1219,14 +1368,25 @@ async def trigger_manual_action(req: ManualActionRequest):
         if not current_price:
             raise HTTPException(status_code=400, detail=f"No se pudo obtener el precio actual para {req.symbol}. Binance ticker incompleto.")
         
+        # Get default amount from DB if not provided
+        trade_amount = 5.0 # Safe fallback
         with get_session_direct() as session:
-            statement = select(BotConfig)
-            config = session.exec(statement).first()
-            trade_amount = config.trade_amount if config else 20.0
-        
+            config = session.query(BotConfig).first()
+            if config:
+                trade_amount = config.trade_amount
+
+        # Final parameters for action
+        action_params = {
+            "side": req.side or side,
+            "amount": float(req.amount or trade_amount),
+            "pipeline_id": 0,
+            "cooldown": req.cooldown,
+            "threshold": req.threshold
+        }
+
         result = await action.execute(
             symbol=req.symbol,
-            params={"side": side, "amount": float(trade_amount), "pipeline_id": 0},
+            params=action_params,
             context_params={"current_price": current_price}
         )
         
@@ -1297,4 +1457,47 @@ async def stop_pipeline_process(process_id: int):
         raise
     except Exception as e:
         logger.error(f"[PIPELINES] Error stopping process: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/chase/simulate", response_model=ChaseSimulationResponse)
+async def simulate_chase(req: ChaseSimulationRequest):
+    """
+    Simulation endpoint for Chase Playground. 
+    Now uses the unified ChaseEmulator.
+    """
+    try:
+        from app.services.pipeline_engine.chase_emulator import ChaseEmulator
+        
+        # 1. Parse simulation time
+        try:
+            last_update = datetime.fromisoformat(req.last_update_iso.replace('Z', '')).replace(tzinfo=None)
+        except:
+            last_update = datetime.utcnow()
+
+        # 2. Instantiate Emulator with current state
+        emulator = ChaseEmulator(
+            side=req.side,
+            order_price=req.order_price,
+            last_tick_price=req.last_tick_price,
+            last_update=last_update,
+            cooldown=req.cooldown_seconds or 5,
+            threshold=req.price_threshold or 0.0005
+        )
+        emulator.status = req.status
+
+        # 3. Process the new tick
+        result = emulator.on_tick(req.current_price)
+
+        return ChaseSimulationResponse(
+            status=result["status"],
+            order_price=emulator.order_price, # Updated by emulator
+            should_update=result.get("should_update", False),
+            action=result.get("action"),
+            reason=result["reason"],
+            last_update_iso=result.get("last_update_iso")
+        )
+    except Exception as e:
+        logger.error(f"[CHASE SIM] Error: {e}")
+        traceback.print_exc()
         raise HTTPException(status_code=500, detail=str(e))

@@ -3,7 +3,7 @@ from app.services.tracker_logic import TradeTracker
 from app.db.database import Fill
 from datetime import datetime
 
-def test_group_fills_by_order_includes_nested_fills():
+def test_group_fills_by_order_includes_nested_fills(session):
     """
     TDD Test: Verify that grouping fills by order results in a 
     dictionary that contains the list of original fills.
@@ -36,7 +36,7 @@ def test_group_fills_by_order_includes_nested_fills():
     )
     
     # Run the internal grouping logic
-    orders_list = tracker._group_fills_by_order([f1, f2])
+    orders_list = tracker._group_fills_by_order([f1, f2], session=session)
     
     # Assertions
     assert len(orders_list) == 1
@@ -52,7 +52,7 @@ def test_group_fills_by_order_includes_nested_fills():
     assert order["fills"][1]["trade_id"] == "trade_2"
     assert "fee" in order["fills"][0], "Individual fees must be present for total transparency"
 
-def test_match_trades_propagates_fills_to_trade_objects():
+def test_match_trades_propagates_fills_to_trade_objects(session):
     """
     TDD Test: Verify that match_trades output includes the nested fills for UI use.
     """
@@ -66,7 +66,7 @@ def test_match_trades_propagates_fills_to_trade_objects():
     exit_f1 = Fill(trade_id="x1", order_id="sell_B", symbol="BTC/USDT", side="sell", price=110.0, amount=2.0, fee=0.2, timestamp=200, datetime=datetime.now())
     
     # Match using standard FIFO
-    trades = tracker.match_trades([entry_f1, entry_f2, exit_f1], strategy_name="fifo")
+    trades = tracker.match_trades([entry_f1, entry_f2, exit_f1], strategy_name="fifo", session=session)
     
     assert len(trades) == 1
     trade = trades[0]

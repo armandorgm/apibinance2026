@@ -105,10 +105,9 @@ class StreamManager:
                     status = order.get('status')
                     print(f"[STREAM] Order Update: {order.get('id')} -> {status}")
                     
-                    if status in ['closed', 'canceled', 'rejected']:
-                        # TODO: Trigger Adaptive Action sequentially
-                        # await bot_instance.evaluate_stream_order(order)
-                        pass
+                    if status in ['closed', 'canceled', 'rejected', 'expired']:
+                        from app.services.bot_service import bot_instance
+                        await bot_instance.evaluate_stream_order(order)
                         
             except ccxt.NetworkError:
                 await asyncio.sleep(1)

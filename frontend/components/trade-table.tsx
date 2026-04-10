@@ -33,7 +33,7 @@ function OrderIdBadge({ id }: { id: string | null | undefined }) {
   if (!id || id === '') return null;
   return (
     <span className="inline-flex items-center font-mono text-[9px] text-gray-400 dark:text-gray-500 bg-gray-50 dark:bg-gray-900/50 px-1 rounded border border-gray-100 dark:border-gray-800" title={`Binance Order ID: ${id}`}>
-      #{id.slice(-8)}
+      #{id}
     </span>
   );
 }
@@ -91,7 +91,7 @@ function FillsSubTable({ fills, title }: { fills: FillDetail[] | undefined; titl
           {fills.map((fill) => (
             <tr key={fill.trade_id} className="hover:bg-slate-50/30 dark:hover:bg-slate-800/20 transition-colors">
               <td className="px-3 py-2 font-mono text-[10px] font-medium text-slate-500 dark:text-slate-400">
-                #{fill.trade_id.slice(-6)}
+                #{fill.trade_id}
               </td>
               <td className="px-3 py-2 text-slate-700 dark:text-slate-300 font-semibold">{formatPrice(fill.price)}</td>
               <td className="px-3 py-2 text-slate-600 dark:text-slate-400">{formatAmount(fill.amount)}</td>

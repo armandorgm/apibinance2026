@@ -29,11 +29,11 @@ def run_tests():
         
         if result.returncode == 0:
             print("\n" + "="*60)
-            print("  ✅ ALL TESTS PASSED SUCCESSFULLY")
+            print("  [OK] ALL TESTS PASSED SUCCESSFULLY")
             print("="*60)
         else:
             print("\n" + "="*60)
-            print(f"  ❌ TEST SUITE FAILED (Exit Code: {result.returncode})")
+            print(f"  [FAIL] TEST SUITE FAILED (Exit Code: {result.returncode})")
             print("="*60)
             sys.exit(result.returncode)
             

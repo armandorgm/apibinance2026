@@ -3,7 +3,7 @@ Core business logic for FIFO trade matching and PnL calculation.
 This is the heart of the system - matches buys and sells using FIFO algorithm.
 """
 from typing import List, Dict, Any, Tuple, Set, Optional
-from app.db.database import Fill, Trade, Order, get_session_direct
+from app.db.database import Fill, Trade, BasicOrder, ConditionalOrder, get_session_direct
 from sqlmodel import select, Session
 from collections import deque
 
@@ -262,14 +262,24 @@ class TradeTracker:
 
                 if inner_session:
                     order_ids = list(orders.keys())
-                    statement = select(Order).where(Order.id.in_(order_ids))
-                    db_orders = inner_session.exec(statement).all()
-                    for db_o in db_orders:
+                    
+                    # Enrichment from BasicOrders
+                    stmt_basic = select(BasicOrder).where(BasicOrder.id.in_(order_ids))
+                    db_basic = inner_session.exec(stmt_basic).all()
+                    for db_o in db_basic:
                         if db_o.id in orders:
                             orders[db_o.id]['can_be_entry'] = db_o.can_be_entry
                             orders[db_o.id]['originator'] = db_o.originator
-                            if db_o.source == "ALGO":
-                                orders[db_o.id]['order_type'] = "ALGO"
+                            orders[db_o.id]['order_type'] = db_o.order_type
+                    
+                    # Enrichment from ConditionalOrders
+                    stmt_cond = select(ConditionalOrder).where(ConditionalOrder.id.in_(order_ids))
+                    db_cond = inner_session.exec(stmt_cond).all()
+                    for db_o in db_cond:
+                        if db_o.id in orders:
+                            orders[db_o.id]['can_be_entry'] = db_o.can_be_entry
+                            orders[db_o.id]['originator'] = db_o.originator
+                            orders[db_o.id]['order_type'] = "ALGO" # Normalize per glossary
                     
                     if should_close:
                         inner_session.close()

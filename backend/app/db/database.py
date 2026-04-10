@@ -20,14 +20,14 @@ class OrderSource(str, Enum):
     STANDARD = "STANDARD"
     ALGO = "ALGO"
 
-class Order(SQLModel, table=True):
+class BasicOrder(SQLModel, table=True):
     """
-    Unified Order model (SOLID).
-    Stores intent and originator metadata.
+    Standard Binance Order (LIMIT/MARKET).
+    Faithful source from CCXT's fetch_order.
     """
-    __tablename__ = "orders"
+    __tablename__ = "basic_orders"
     
-    id: str = Field(primary_key=True)  # Binance orderId or algoId
+    id: str = Field(primary_key=True)  # Raw Binance orderId
     symbol: str = Field(index=True)
     side: str  # 'buy' or 'sell'
     amount: float
@@ -35,9 +35,33 @@ class Order(SQLModel, table=True):
     status: str
     datetime: datetime
     originator: Originator
-    source: OrderSource
+    source: OrderSource = Field(default=OrderSource.STANDARD)
     can_be_entry: bool = True
     is_bot_logged: bool = False
+    order_type: str = "LIMIT"
+    created_at: datetime = Field(default_factory=datetime.utcnow)
+
+class ConditionalOrder(SQLModel, table=True):
+    """
+    Binance Algo Service Order (TP/SL/Trailing).
+    Faithful source from Binance Algo API.
+    """
+    __tablename__ = "conditional_orders"
+    
+    id: str = Field(primary_key=True)  # Raw Binance algoId
+    symbol: str = Field(index=True)
+    side: str
+    amount: float
+    price: float
+    status: str
+    datetime: datetime
+    originator: Originator
+    source: OrderSource = Field(default=OrderSource.ALGO)
+    can_be_entry: bool = False
+    is_bot_logged: bool = False
+    order_type: str = "STOP_MARKET"
+    create_time_ms: Optional[int] = None
+    conditional_kind: Optional[str] = None # take_profit, stop_loss, trailing
     created_at: datetime = Field(default_factory=datetime.utcnow)
 
 class Fill(SQLModel, table=True):
@@ -58,7 +82,7 @@ class Fill(SQLModel, table=True):
     fee_currency: str
     timestamp: int  # Unix timestamp in milliseconds
     datetime: datetime
-    order_id: str = Field(foreign_key="orders.id", index=True) # Mandatory FK
+    order_id: str = Field(index=True) # ID crudo (se busca en basic o conditional via app logic)
     order_type: Optional[str] = None # Standard type (LIMIT/MARKET)
     created_at: datetime = Field(default_factory=datetime.utcnow)
 
@@ -171,6 +195,11 @@ class BotPipelineProcess(SQLModel, table=True):
     
     # Status of the session: 'CHASING', 'WAITING_FILL', 'COMPLETED', 'ABORTED'
     status: str = Field(default="CHASING")
+    
+    # Custom chasing parameters (Overriding defaults)
+    custom_cooldown: Optional[int] = None
+    custom_threshold: Optional[float] = None
+    retry_count: int = Field(default=0)
     
     created_at: datetime = Field(default_factory=datetime.utcnow)
     updated_at: datetime = Field(default_factory=datetime.utcnow)

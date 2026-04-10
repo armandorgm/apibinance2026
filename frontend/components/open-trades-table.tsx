@@ -92,7 +92,7 @@ export function OpenTradesTable({ trades }: OpenTradesTableProps) {
           </thead>
           <tbody className="divide-y divide-gray-100 dark:divide-gray-700/50">
             {openOrders.map((order) => (
-              <tr key={order.id} className="group hover:bg-indigo-50/20 dark:hover:bg-indigo-900/10 transition-all duration-200">
+              <tr key={order.entry_order_id || order.id} className="group hover:bg-indigo-50/20 dark:hover:bg-indigo-900/10 transition-all duration-200">
                 <td className="px-6 py-5">
                   <div className="flex flex-col gap-1.5">
                     <div className="flex items-center gap-2">
@@ -101,8 +101,8 @@ export function OpenTradesTable({ trades }: OpenTradesTableProps) {
                       </span>
                       <SourceBadge originator={order.originator} />
                     </div>
-                    <span className="text-[9px] font-mono text-gray-400 dark:text-gray-500 truncate max-w-[100px]">
-                      ID: #{order.entry_order_id?.slice(-8) || order.id}
+                    <span className="text-[9px] font-mono text-gray-400 dark:text-gray-500">
+                      ID: #{order.entry_order_id || order.id}
                     </span>
                   </div>
                 </td>
