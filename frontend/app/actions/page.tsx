@@ -1,7 +1,7 @@
 'use client'
 
 import { useSearchParams } from 'next/navigation'
-import { RepairChaseForm } from '@/components/actions/repair-chase-form'
+import { UcoeActionForm } from '@/components/actions/ucoe-action-form'
 import { ChaseEntryForm, MarketBuyForm } from '@/components/actions/trading-forms'
 import { Suspense } from 'react'
 import { Loader2 } from 'lucide-react'
@@ -13,12 +13,12 @@ function ActionsDispatcher() {
 
   return (
     <div className="animate-in fade-in slide-in-from-bottom-4 duration-500">
-      {type === 'repair-chase' && <RepairChaseForm />}
+      {type === 'ucoe' && <UcoeActionForm initialSymbol={symbol} />}
       {type === 'chase-entry' && <ChaseEntryForm symbol={symbol} />}
       {type === 'market-buy' && <MarketBuyForm symbol={symbol} />}
       
       {/* Fallback for actions in migration process */}
-      {!['repair-chase', 'chase-entry', 'market-buy'].includes(type) && (
+      {!['ucoe', 'chase-entry', 'market-buy'].includes(type) && (
         <div className="p-20 text-center bg-white dark:bg-gray-900 rounded-[2.5rem] border-2 border-dashed border-gray-100 dark:border-gray-800 flex flex-col items-center gap-6 shadow-sm">
           <div className="w-20 h-20 rounded-3xl bg-gray-50 dark:bg-gray-950 flex items-center justify-center text-gray-300 dark:text-gray-700 shadow-inner">
             <Loader2 className="w-10 h-10 animate-spin" />

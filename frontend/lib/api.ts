@@ -193,25 +193,63 @@ export interface BotStatus {
   } | null
 }
 
-export interface RepairPreview {
+export interface UcoeCandidate {
+  id: string
   symbol: string
-  order_id: string
+  type: string
   side: string
-  original_price: number
+  price: number
   amount: number
-  target_buy_price: number
-  profit_percentage: number
-  estimated_buy_fee: number
+  filled: number
+  status: string
   timestamp: number
   datetime: string
+  is_compatible_with_reduce_only: boolean
+  is_orphan: boolean
 }
 
-export interface RepairExecuteResponse {
+export interface UcoePreview {
+  symbol: string
+  reference_order_id?: string
+  reference_ids?: string[]
+  reference_side: string
+  reference_price?: number
+  reference_price_avg?: number
+  target_side: string
+  target_price: number
+  original_amount?: number
+  original_total_amount?: number
+  adjusted_amount?: number
+  adjusted_total_amount?: number
+  needs_scaling: boolean
+  reduce_only: boolean
+  profit_percentage: number
+  position_context: {
+    current_side: string
+    net_pos: number
+    timestamp?: number
+    leverage?: number
+  }
+  projected_net_pos?: number
+  missing_amount_to_zero?: number
+  open_tp_qty?: number
+  algo_units?: number
+  basic_units?: number
+  pos_units?: number
+  action_units?: number
+  algo_notional_est?: number
+  basic_notional_est?: number
+  action_notional_est?: number
+}
+
+export interface UcoeExecuteResponse {
   success: boolean
-  message: string
-  trade_id: string
-  buy_price: number
-  trades_created: number
+  order_id: string
+  side: string
+  price: string
+  amount: string
+  reduce_only: boolean
+  is_bulk?: boolean
 }
 
 export async function fetchTrades(symbol: string, logic: string = 'fifo', sortBy: string = 'recent'): Promise<Trade[]> {
@@ -424,23 +462,52 @@ export async function simulateChase(req: ChaseSimulationRequest): Promise<ChaseS
   return response.json()
 }
 
-export async function fetchRepairPreview(orderId: string, profitPc: number = 0.5): Promise<RepairPreview> {
-  const response = await fetch(`${API_BASE_URL}/api/trades/repair/preview?order_id=${encodeURIComponent(orderId)}&profit_pc=${profitPc}`)
+export async function fetchUcoeCandidates(symbol: string, filterMode: string = '7d', orphansOnly: boolean = false): Promise<UcoeCandidate[]> {
+  const res = await fetch(`${API_BASE_URL}/api/unified-counter-order-engine/candidates?symbol=${encodeURIComponent(symbol)}&filter_mode=${filterMode}&orphans_only=${orphansOnly}`)
+  if (!res.ok) throw new Error('Failed to fetch UCOE candidates')
+  return res.json()
+}
+
+export async function fetchUcoePreview(symbol: string, orderId: string, profitPc: number = 0.5): Promise<UcoePreview> {
+  const response = await fetch(`${API_BASE_URL}/api/unified-counter-order-engine/preview?symbol=${encodeURIComponent(symbol)}&order_id=${encodeURIComponent(orderId)}&profit_pc=${profitPc}`)
   if (!response.ok) {
     const err = await response.json().catch(() => ({}))
-    throw new Error(err.detail || 'Error fetching repair preview')
+    throw new Error(err.detail || 'Error fetching UCOE preview')
   }
   return response.json()
 }
 
-export async function executeRepair(orderId: string, profitPc: number = 0.5): Promise<RepairExecuteResponse> {
-  const response = await fetch(`${API_BASE_URL}/api/trades/repair/execute?order_id=${encodeURIComponent(orderId)}&profit_pc=${profitPc}`, {
-    method: 'POST'
-  })
+export async function executeUcoeAction(symbol: string, orderId: string, profitPc: number = 0.5, overrideAmount?: number): Promise<UcoeExecuteResponse> {
+  let url = `${API_BASE_URL}/api/unified-counter-order-engine/execute?symbol=${encodeURIComponent(symbol)}&order_id=${encodeURIComponent(orderId)}&profit_pc=${profitPc}`
+  if (overrideAmount !== undefined) url += `&override_amount=${overrideAmount}`
+  
+  const response = await fetch(url, { method: 'POST' })
   if (!response.ok) {
     const err = await response.json().catch(() => ({}))
-    throw new Error(err.detail || 'Error executing repair')
+    throw new Error(err.detail || 'Error executing UCOE action')
   }
   return response.json()
 }
+
+export async function fetchUcoeBulkPreview(symbol: string, orderIds: string[], profitPc: number = 0.5): Promise<UcoePreview> {
+  const response = await fetch(`${API_BASE_URL}/api/unified-counter-order-engine/bulk-preview?symbol=${encodeURIComponent(symbol)}&order_ids=${orderIds.join(',')}&profit_pc=${profitPc}`)
+  if (!response.ok) {
+    const err = await response.json().catch(() => ({}))
+    throw new Error(err.detail || 'Error fetching UCOE bulk preview')
+  }
+  return response.json()
+}
+
+export async function executeUcoeBulkAction(symbol: string, orderIds: string[], profitPc: number = 0.5, overrideAmount?: number): Promise<UcoeExecuteResponse> {
+  let url = `${API_BASE_URL}/api/unified-counter-order-engine/bulk-execute?symbol=${encodeURIComponent(symbol)}&order_ids=${orderIds.join(',')}&profit_pc=${profitPc}`
+  if (overrideAmount !== undefined) url += `&override_amount=${overrideAmount}`
+
+  const response = await fetch(url, { method: 'POST' })
+  if (!response.ok) {
+    const err = await response.json().catch(() => ({}))
+    throw new Error(err.detail || 'Error executing UCOE bulk action')
+  }
+  return response.json()
+}
+
 

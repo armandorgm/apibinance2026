@@ -745,29 +745,89 @@ async def sync_trades(symbol: str = "BTC/USDT", logic: str = "atomic_fifo"):
         raise HTTPException(status_code=500, detail=f"Error syncing trades: {str(e)}")
 
 
-# --- Repair Mechanism Endpoints ---
+# --- Unified Counter-Order Engine (UCOE) ---
 
-@router.get("/trades/repair/preview")
-async def get_repair_preview(order_id: str, profit_pc: float = 0.5):
+@router.get("/unified-counter-order-engine/candidates")
+async def get_ucoe_candidates(symbol: str, filter_mode: str = '7d', orphans_only: bool = False):
     """
-    Get a preview of the synthetic buy calculations for an orphan sell.
+    Fetch real Binance orders to act as reference for strategic actions.
+    Supports '7d' or 'position_cycle' filtering and 'orphans_only' mode.
     """
     try:
-        from app.services.repair_service import RepairService
-        return RepairService.get_repair_preview(order_id, profit_pc)
+        from app.services.unified_counter_order_service import UnifiedCounterOrderService
+        symbol = await exchange_manager.normalize_symbol(symbol)
+        return await UnifiedCounterOrderService.get_candidates(symbol, filter_mode=filter_mode, orphans_only=orphans_only)
     except Exception as e:
         raise HTTPException(status_code=400, detail=str(e))
 
-@router.post("/trades/repair/execute")
-async def execute_repair(order_id: str, profit_pc: float = 0.5):
+@router.get("/unified-counter-order-engine/preview")
+async def get_ucoe_preview(symbol: str, order_id: str, profit_pc: float = 0.5):
     """
-    Execute the repair action (SOLID).
+    Preview the strategic counterpart for a specific Binance order.
     """
     try:
-        from app.services.repair_service import RepairService
-        return await RepairService.execute_repair(order_id, profit_pc)
+        from app.services.unified_counter_order_service import UnifiedCounterOrderService
+        symbol = await exchange_manager.normalize_symbol(symbol)
+        return await UnifiedCounterOrderService.get_counter_order_preview(symbol, order_id, profit_pc)
     except Exception as e:
         raise HTTPException(status_code=400, detail=str(e))
+
+@router.get("/unified-counter-order-engine/bulk-preview")
+async def get_ucoe_bulk_preview(symbol: str, order_ids: str, profit_pc: float = 0.5):
+    """
+    Preview a unified strategic counterpart for multiple Binance orders.
+    order_ids should be comma-separated.
+    """
+    try:
+        from app.services.unified_counter_order_service import UnifiedCounterOrderService
+        symbol = await exchange_manager.normalize_symbol(symbol)
+        id_list = [oid.strip() for oid in order_ids.split(",") if oid.strip()]
+        return await UnifiedCounterOrderService.get_bulk_preview(symbol, id_list, profit_pc)
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+@router.post("/unified-counter-order-engine/execute")
+async def execute_ucoe_action(symbol: str, order_id: str, profit_pc: float = 0.5, override_amount: Optional[float] = None):
+    """
+    Execute the strategic counterpart for a specific Binance order.
+    Supports override_amount for Full Position Closure.
+    """
+    try:
+        from app.services.unified_counter_order_service import UnifiedCounterOrderService
+        symbol = await exchange_manager.normalize_symbol(symbol)
+        return await UnifiedCounterOrderService.execute_counter_order(symbol, order_id, profit_pc, override_amount=override_amount)
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+@router.post("/unified-counter-order-engine/bulk-execute")
+async def execute_ucoe_bulk_action(symbol: str, order_ids: str, profit_pc: float = 0.5, override_amount: Optional[float] = None):
+    """
+    Execute the unified strategic counterpart for multiple Binance orders.
+    order_ids should be comma-separated.
+    """
+    try:
+        from app.services.unified_counter_order_service import UnifiedCounterOrderService
+        symbol = await exchange_manager.normalize_symbol(symbol)
+        id_list = [oid.strip() for oid in order_ids.split(",") if oid.strip()]
+        return await UnifiedCounterOrderService.execute_counter_order(symbol, "", profit_pc, is_bulk=True, order_ids=id_list, override_amount=override_amount)
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+@router.post("/unified-counter-order-engine/bulk-execute")
+async def execute_ucoe_bulk_action(symbol: str, order_ids: str, profit_pc: float = 0.5):
+    """
+    Execute a unified strategic counterpart for multiple Binance orders.
+    order_ids should be comma-separated.
+    """
+    try:
+        from app.services.unified_counter_order_service import UnifiedCounterOrderService
+        symbol = await exchange_manager.normalize_symbol(symbol)
+        id_list = [oid.strip() for oid in order_ids.split(",") if oid.strip()]
+        return await UnifiedCounterOrderService.execute_counter_order(symbol, None, profit_pc, is_bulk=True, order_ids=id_list)
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
 
 
 @router.post("/sync/historical", response_model=SyncResponse)

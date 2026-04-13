@@ -222,7 +222,7 @@ export default function Home() {
             <BalanceWidget />
           </div>
           <div className="xl:col-span-2">
-            <BotMonitor />
+            <BotMonitor symbol={symbol} />
           </div>
         </div>
 
