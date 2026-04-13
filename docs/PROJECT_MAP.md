@@ -24,11 +24,11 @@ Rastreador de operaciones para Binance Futures con soporte para emparejamiento F
 - `frontend/app/exchange-logs/`: Monitor interactivo central para reportes y respuestas CCXT.
 
 ## Flujos Críticos de Datos
-1. **Sincronización**: Binance API -> `exchange.py` -> `ensure_orders_exist` -> `basic_orders` / `conditional_orders` / `fills` -> `tracker_logic.py` -> `trades` table.
-2. **Visualización**: `routes.py` (Unión virtual de ódeness + hidratación de fills) -> `api.ts` -> React Query -> `trade-table.tsx` (expandible) / `trade-chart.tsx`.
-3. **Relación de Datos**: 1 Orden (Virtual) -> N Fills (Executions). Agrupación en `tracker_logic.py` e hidratación dinámica en `routes.py`.
+1. **Sincronización**: Binance API -> `exchange.py` (Unified native CCXT fetch for Standard + Algo CONDITIONAL) -> `ensure_orders_exist` -> `basic_orders` / `conditional_orders` / `fills` -> `tracker_logic.py` -> `trades` table.
+2. **Visualización**: `routes.py` (Unión virtual de órdenes normalizadas por CCXT + hidratación de fills) -> `api.ts` -> React Query -> `trade-table.tsx` (expandible) / `trade-chart.tsx`.
+3. **Relación de Datos**: 1 Orden (Virtual normalizada) -> N Fills (Executions). Agrupación en `tracker_logic.py` e hidratación dinámica en `routes.py`.
 4. **Formateo**: Precios brutos -> `lib/utils.ts` (`formatPrice`) -> UI.
-4. **Ejecución Autónoma**: `BotConfig` (DB) -> `BotService` (Background Task) -> CCXT -> Binance API -> `BotSignal` (DB).
+5. **Ejecución Autónoma**: `BotConfig` (DB) -> `BotService` (Background Task) -> CCXT -> Binance API -> `BotSignal` (DB).
 
 ## Responsabilidades de Módulos (Actualizado 2026-04-01)
 - `backend/app/services/history_formatter.py`: Abstrae el formateo y acomodo de resultados (Patrón Strategy) bajo los principios Open-Closed y SRP para ordenar la visualización combinada de trades cerradas y flotantes.
@@ -41,8 +41,9 @@ Rastreador de operaciones para Binance Futures con soporte para emparejamiento F
 - `backend/app/services/bot_service.py`: Ejecuta órdenes transformando el monto inversión configuado (USD Notional) a cantidad exacta de contratos vía matemática (`Notional / Live Market Price`), pasando por el filtro de CCXT `amount_to_precision` para lograr compatibilidad estricta con Binance eliminando errores `-4164 MIN_NOTIONAL` y `-4111 PRECISION`.
 - `frontend/app/settings/page.tsx`: Vista de control paramétrico estricto para el Bot Autónomo. La UI aclara la lógica de apalancamiento vs input en notional.
 - `frontend/components/balance-widget.tsx`: Dashboard Balance View con pestañas e interfaz unificada.
-- `backend/app/services/exchange_logger.py`: Interceptor diseñado en base al SRP para persistir la actividad CCXT al completo.
-- `backend/app/db/database.py`: Incorpora histórico infinito vía `ExchangeLog` aislando la carga del sistema central de exchange operations.
+- `backend/app/services/unified_counter_order_service.py`: Motor estratégico bi-direccional (UCOE) que genera contrapartidas (Long/Short) basadas en el historial real de 7 días de Binance, gestionando automáticamente el flag `reduceOnly` y utilizando unidades estándar de contratos (Factor 1).
+- `frontend/components/ucoe-activity-panel.tsx` & `ucoe-preview-modal.tsx`: Interfaz de usuario para la ejecución estratégica de órdenes espejo/contrapartida con ajuste de profit dinámico (0.05% - 30%).
+- `backend/app/api/routes.py`: Incorpora los endpoints descriptivos `/api/unified-counter-order-engine/*` para la orquestación del UCOE.
 
 ## AI Agent Configuration (Updated 2026-04-04)
 

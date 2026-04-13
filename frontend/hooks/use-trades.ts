@@ -5,8 +5,8 @@ import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { 
   fetchTrades, syncTrades, syncHistoricalTrades, fetchStats, 
   fetchBotStatus, fetchBotLogs, startBot, stopBot, fetchBotConfig, updateBotConfig, fetchBalances,
-  fetchOpenOrders, fetchFailedOrders, fetchActivePipelines, stopPipeline,
-  Trade, Stats, SyncResponse, BotStatus, BotSignal, BotConfig, AggregatedBalances, Order, ActivePipeline
+  fetchOpenOrders, fetchFailedOrders, fetchActivePipelines, stopPipeline, fetchUcoeCandidates, fetchUcoePreview, executeUcoeAction, fetchUcoeBulkPreview, executeUcoeBulkAction,
+  Trade, Stats, SyncResponse, BotStatus, BotSignal, BotConfig, AggregatedBalances, Order, ActivePipeline, UcoeCandidate, UcoePreview, UcoeExecuteResponse
 } from '@/lib/api'
 
 export function useTrades(symbol: string, logic: string = 'fifo', sortBy: string = 'recent') {
@@ -139,5 +139,53 @@ export function useStopPipeline() {
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['active-pipelines'] })
     }
+  })
+}
+export function useUcoeCandidates(symbol: string, filterMode: string = '7d', orphansOnly: boolean = false) {
+  return useQuery<UcoeCandidate[]>({
+    queryKey: ['ucoe-candidates', symbol, filterMode, orphansOnly],
+    queryFn: () => fetchUcoeCandidates(symbol, filterMode, orphansOnly),
+    enabled: !!symbol,
+    refetchInterval: 10000,
+  })
+}
+
+export function useUcoePreview(symbol: string, orderId: string, profitPc: number) {
+  return useQuery<UcoePreview>({
+    queryKey: ['ucoe-preview', symbol, orderId, profitPc],
+    queryFn: () => fetchUcoePreview(symbol, orderId, profitPc),
+    enabled: !!symbol && !!orderId,
+  })
+}
+
+export function useExecuteUcoe() {
+  const queryClient = useQueryClient()
+  return useMutation<UcoeExecuteResponse, Error, { symbol: string; orderId: string; profitPc: number; overrideAmount?: number }>({
+    mutationFn: ({ symbol, orderId, profitPc, overrideAmount }) => executeUcoeAction(symbol, orderId, profitPc, overrideAmount),
+    onSuccess: (_, variables) => {
+      queryClient.invalidateQueries({ queryKey: ['trades', variables.symbol] })
+      queryClient.invalidateQueries({ queryKey: ['bot-logs'] })
+      queryClient.invalidateQueries({ queryKey: ['ucoe-candidates', variables.symbol] })
+    },
+  })
+}
+
+export function useUcoeBulkPreview(symbol: string, orderIds: string[], profitPc: number) {
+  return useQuery<UcoePreview>({
+    queryKey: ['ucoe-bulk-preview', symbol, orderIds, profitPc],
+    queryFn: () => fetchUcoeBulkPreview(symbol, orderIds, profitPc),
+    enabled: !!symbol && orderIds.length > 0,
+  })
+}
+
+export function useExecuteUcoeBulk() {
+  const queryClient = useQueryClient()
+  return useMutation<UcoeExecuteResponse, Error, { symbol: string; orderIds: string[]; profitPc: number; overrideAmount?: number }>({
+    mutationFn: ({ symbol, orderIds, profitPc, overrideAmount }) => executeUcoeBulkAction(symbol, orderIds, profitPc, overrideAmount),
+    onSuccess: (_, variables) => {
+      queryClient.invalidateQueries({ queryKey: ['trades', variables.symbol] })
+      queryClient.invalidateQueries({ queryKey: ['bot-logs'] })
+      queryClient.invalidateQueries({ queryKey: ['ucoe-candidates', variables.symbol] })
+    },
   })
 }

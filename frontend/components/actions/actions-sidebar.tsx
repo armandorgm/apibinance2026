@@ -10,19 +10,19 @@ const CATEGORIES = [
     items: [
       { id: 'chase-entry', name: 'Chase Entry', icon: Zap, color: 'text-amber-500' },
       { id: 'market-buy', name: 'Market Buy', icon: ShoppingCart, color: 'text-emerald-500' },
+      { id: 'ucoe', name: 'Unified Counter-Order Engine (UCOE)', icon: Wrench, color: 'text-indigo-500' },
     ]
   },
   {
     name: 'Mantenimiento',
     items: [
-      { id: 'repair-chase', name: 'Reparar Chase Order', icon: Wrench, color: 'text-indigo-500' },
+      { id: 'historical-sync', name: 'Sincronización Histórica', icon: History, color: 'text-violet-500' },
     ]
   },
   {
     name: 'Sistema',
     items: [
       { id: 'bot-control', name: 'Control de Bot', icon: Play, color: 'text-blue-500' },
-      { id: 'historical-sync', name: 'Sincronización Histórica', icon: History, color: 'text-violet-500' },
     ]
   }
 ]

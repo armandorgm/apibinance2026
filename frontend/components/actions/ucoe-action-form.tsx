@@ -1,0 +1,320 @@
+'use client'
+
+import React, { useState, useMemo } from 'react'
+import { 
+  useUcoeCandidates, 
+  useUcoePreview, 
+  useExecuteUcoe, 
+  useUcoeBulkPreview, 
+  useExecuteUcoeBulk 
+} from '@/hooks/use-trades'
+import { format } from 'date-fns'
+import { clsx } from 'clsx'
+import { 
+  Loader2, Search, Zap, ShieldCheck, 
+  Layers, CheckCircle2, 
+  Calculator, Coins, Hash, AlertTriangle
+} from 'lucide-react'
+
+interface UcoeActionFormProps {
+  initialSymbol?: string
+}
+
+export function UcoeActionForm({ initialSymbol = '1000PEPE/USDC:USDC' }: UcoeActionFormProps) {
+  const [symbol, setSymbol] = useState(initialSymbol)
+  const [manualOrderId, setManualOrderId] = useState('')
+  const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set())
+  const [profitPc, setProfitPc] = useState(0.5)
+  const [isTotalCloseMode, setIsTotalCloseMode] = useState(false)
+  
+  const [filterMode, setFilterMode] = useState<'7d' | 'position_cycle'>('7d')
+  const [orphansOnly, setOrphansOnly] = useState(false)
+
+  // V5.9 Safeguard: Only fetch if symbol looks semi-complete
+  const shouldFetch = symbol.length >= 6
+  const { data: candidates, isLoading: isLoadingCandidates, error: candidatesError } = useUcoeCandidates(
+    shouldFetch ? symbol : '', 
+    filterMode, 
+    orphansOnly
+  )
+  
+  const isBulk = selectedIds.size > 1
+  const singleSelectedId = selectedIds.size === 1 ? Array.from(selectedIds)[0] : null
+  const activeOrderId = singleSelectedId || manualOrderId
+  
+  const { data: singlePreview, isLoading: isLoadingSinglePreview, error: singleError } = useUcoePreview(
+    shouldFetch ? symbol : '', 
+    activeOrderId || '', 
+    profitPc
+  )
+  const { data: bulkPreview, isLoading: isLoadingBulkPreview, error: bulkError } = useUcoeBulkPreview(
+    shouldFetch ? symbol : '', 
+    Array.from(selectedIds), 
+    profitPc
+  )
+  
+  const activePreview = isBulk ? bulkPreview : singlePreview
+  const isLoadingPreview = isBulk ? isLoadingBulkPreview : isLoadingSinglePreview
+  const previewError = isBulk ? bulkError : singleError
+
+  const executeMutation = useExecuteUcoe()
+  const executeBulkMutation = useExecuteUcoeBulk()
+
+  const handleExecute = () => {
+    const overrideAmt = isTotalCloseMode ? activePreview?.missing_amount_to_zero : undefined
+    if (isBulk) {
+      executeBulkMutation.mutate({ symbol, orderIds: Array.from(selectedIds), profitPc, overrideAmount: overrideAmt }, {
+        onSuccess: () => {
+          alert(`Éxito.`)
+          setSelectedIds(new Set())
+          setIsTotalCloseMode(false)
+        },
+        onError: (err) => alert(`Error: ${err.message}`)
+      })
+    } else if (activeOrderId) {
+      executeMutation.mutate({ symbol, orderId: activeOrderId, profitPc, overrideAmount: overrideAmt }, {
+        onSuccess: () => {
+          alert(`Éxito.`)
+          setManualOrderId('')
+          setSelectedIds(new Set())
+          setIsTotalCloseMode(false)
+        },
+        onError: (err) => alert(`Error: ${err.message}`)
+      })
+    }
+  }
+
+  const toggleId = (id: string, side: string) => {
+    const newSet = new Set(selectedIds)
+    if (newSet.has(id)) newSet.delete(id)
+    else {
+      const currentSide = candidates?.find(c => newSet.has(c.id))?.side
+      if (currentSide && currentSide !== side) {
+        alert('No mezclar lados.')
+        return
+      }
+      newSet.add(id)
+      setManualOrderId('')
+    }
+    setSelectedIds(newSet)
+    setIsTotalCloseMode(false)
+  }
+
+  const canDoTotalClose = (activePreview?.position_context?.current_side !== 'none') || 
+                         ((activePreview?.algo_units ?? 0) !== 0) || 
+                         ((activePreview?.basic_units ?? 0) !== 0)
+
+  return (
+    <div className="max-w-6xl mx-auto space-y-8 pb-32">
+      {/* Header Section */}
+      <div className="flex flex-col md:flex-row md:items-end justify-between gap-6 px-4">
+        <div className="space-y-1">
+          <div className="flex items-center gap-3">
+             <div className="p-2 bg-indigo-600 rounded-xl shadow-lg">
+                <Layers className="w-5 h-5 text-white" />
+             </div>
+             <h2 className="text-2xl font-black text-gray-900 dark:text-white tracking-tight">
+                UCOE Engine
+             </h2>
+          </div>
+          <p className="text-[11px] font-bold text-gray-500 dark:text-gray-400 uppercase tracking-widest ml-12">
+            Dual Insight <span className="text-indigo-500">Stability Checker</span>
+          </p>
+        </div>
+
+        <div className="flex items-center gap-2 bg-gray-100 dark:bg-gray-800/50 p-1 rounded-xl border border-gray-200 dark:border-gray-700">
+           <button onClick={() => setFilterMode('7d')} className={clsx("px-4 py-1.5 rounded-lg text-[10px] font-black transition-all", filterMode === '7d' ? "bg-white dark:bg-gray-700 shadow-sm" : "text-gray-400")}>7 Días</button>
+           <button onClick={() => setFilterMode('position_cycle')} className={clsx("px-4 py-1.5 rounded-lg text-[10px] font-black transition-all", filterMode === 'position_cycle' ? "bg-white dark:bg-gray-700 shadow-sm" : "text-gray-400")}>Ciclo Smart</button>
+        </div>
+      </div>
+
+      <div className="grid grid-cols-1 lg:grid-cols-12 gap-8 px-4">
+        {/* Explorer */}
+        <div className="lg:col-span-4 space-y-6">
+           <div className="bg-white dark:bg-gray-800 rounded-[2rem] border border-gray-100 dark:border-gray-700 shadow-xl flex flex-col h-[650px] overflow-hidden">
+              <div className="p-5 border-b border-gray-50 dark:border-gray-700 flex items-center justify-between">
+                <h3 className="text-xs font-black text-gray-900 dark:text-white uppercase tracking-widest">Actividad Reciente</h3>
+                <input type="checkbox" checked={orphansOnly} onChange={(e) => setOrphansOnly(e.target.checked)} className="w-3.5 h-3.5 rounded border-gray-300 text-indigo-600" title="Solo Huérfanos" />
+              </div>
+
+              <div className="p-4 border-b border-gray-50 dark:border-gray-700">
+                 <div className="relative">
+                    <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-400" />
+                    <input value={symbol} onChange={(e) => setSymbol(e.target.value.toUpperCase())} className="w-full pl-10 pr-4 py-2 bg-gray-50 dark:bg-gray-900 border-none rounded-xl font-mono text-xs font-bold" placeholder="SYMBOL (CCXT / BINANCE)" />
+                 </div>
+                 {!shouldFetch && symbol.length > 0 && (
+                   <div className="mt-2 flex items-center gap-2 text-[10px] font-bold text-amber-500 animate-pulse">
+                      <AlertTriangle className="w-3 h-3" />
+                      Escriba al menos 6 caracteres...
+                   </div>
+                 )}
+              </div>
+
+              <div className="flex-1 overflow-y-auto p-4 space-y-2">
+                  {candidatesError && (
+                    <div className="p-4 bg-rose-50 dark:bg-rose-900/30 text-rose-600 rounded-xl text-[10px] font-black uppercase text-center">
+                       Error de Conexión: Verifique el Símbolo
+                    </div>
+                  )}
+                  {candidates?.map((order) => (
+                    <div key={order.id} onClick={() => toggleId(order.id, order.side)} className={clsx("p-3 rounded-xl border transition-all cursor-pointer", selectedIds.has(order.id) ? "bg-indigo-50 border-indigo-300" : "bg-gray-50/50 border-gray-100 dark:border-gray-800")}>
+                       <div className="flex justify-between items-center capitalize text-[10px] font-black mb-1">
+                          <span className={order.side === 'buy' ? "text-emerald-600" : "text-rose-600"}>{order.side}</span>
+                          <span className="text-gray-400">{format(new Date(order.timestamp || Date.now()), 'dd MMM HH:mm')}</span>
+                       </div>
+                       <p className="text-sm font-black dark:text-white">{order.filled} @ {order.price.toLocaleString()}</p>
+                    </div>
+                  ))}
+                  {!isLoadingCandidates && candidates?.length === 0 && shouldFetch && (
+                    <div className="py-20 text-center grayscale opacity-50">
+                       <Hash className="w-8 h-8 mx-auto text-gray-300 mb-2" />
+                       <p className="text-[9px] font-black uppercase tracking-widest text-gray-400">Sin órdenes en este filtro</p>
+                    </div>
+                  )}
+              </div>
+           </div>
+        </div>
+
+        {/* Multi-Insight Area */}
+        <div className="lg:col-span-8 space-y-6">
+           {activeOrderId || isBulk ? (
+              <div className="bg-white dark:bg-gray-800 rounded-[2.5rem] border border-gray-100 dark:border-gray-700 shadow-2xl p-8 flex flex-col relative overflow-hidden">
+                 <div className="relative z-10 space-y-8">
+                    {/* Header: Position Info */}
+                    <div className="flex items-center justify-between border-b border-gray-100 dark:border-gray-800 pb-6">
+                       <div className="flex items-center gap-4">
+                          <div className={clsx("p-3 rounded-2xl shadow-xl", isTotalCloseMode ? "bg-emerald-600" : "bg-indigo-600")}>
+                             <Coins className="w-6 h-6 text-white" />
+                          </div>
+                          <div>
+                             <h3 className="text-xl font-black text-gray-900 dark:text-white tracking-tight">UCOE Stability Checker</h3>
+                             <p className="text-[10px] font-bold text-gray-400 uppercase tracking-widest mt-1 italic">V5.9 · Stabilization Release</p>
+                          </div>
+                       </div>
+                       
+                       {activePreview?.position_context && (
+                          <div className="text-right">
+                             <div className="flex items-center gap-2 justify-end mb-1">
+                                <span className={clsx("px-2 py-0.5 rounded-md text-[9px] font-black uppercase text-white shadow-sm", activePreview.position_context.current_side === 'long' ? "bg-emerald-500" : "bg-rose-500")}>
+                                   {activePreview.position_context.current_side}
+                                </span>
+                                <span className="text-xs font-black dark:text-white tracking-tight">
+                                   {activePreview.position_context.net_pos.toLocaleString()} <span className="text-[10px] text-gray-400 font-bold ml-1 uppercase">Contracts</span>
+                                </span>
+                             </div>
+                             <p className="text-[11px] font-black text-indigo-500 dark:text-indigo-400 tracking-tighter">
+                                ≈ {activePreview.position_context.notional?.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 4 })} <span className="opacity-60 text-[9px]">USDC</span>
+                             </p>
+                          </div>
+                       )}
+                    </div>
+
+                    {isLoadingPreview ? (
+                       <div className="py-20 flex flex-col items-center justify-center gap-4">
+                          <Loader2 className="w-10 h-10 animate-spin text-indigo-500" />
+                          <p className="text-[10px] font-black text-gray-400 uppercase tracking-widest">Sincronizando Insight...</p>
+                       </div>
+                    ) : activePreview && (
+                       <div className="space-y-10">
+                          {/* Unit Insight Grid */}
+                          <div className="bg-gray-50/50 dark:bg-gray-900/40 p-10 rounded-[2.5rem] border border-gray-100 dark:border-gray-800">
+                             <div className="grid grid-cols-2 md:grid-cols-4 gap-6">
+                                {/* Component: Position */}
+                                <div className="p-4 rounded-2xl bg-white dark:bg-gray-800 border border-gray-100 dark:border-gray-700 shadow-sm text-center space-y-2">
+                                   <p className="text-[9px] font-black text-gray-400 uppercase tracking-widest leading-none">Post-Size</p>
+                                   <p className="text-lg font-black dark:text-white leading-none">{activePreview.pos_units.toLocaleString()}</p>
+                                </div>
+
+                                {/* Component: Algo */}
+                                <div className="p-4 rounded-2xl bg-white dark:bg-gray-800 border border-gray-100 dark:border-gray-700 shadow-sm text-center space-y-2">
+                                   <p className="text-[9px] font-black text-gray-400 uppercase tracking-widest leading-none">Algo Ops</p>
+                                   <p className="text-lg font-black text-emerald-600 leading-none">{activePreview.algo_units.toLocaleString()}</p>
+                                </div>
+
+                                {/* Component: Basic */}
+                                <div className="p-4 rounded-2xl bg-white dark:bg-gray-800 border border-gray-100 dark:border-gray-700 shadow-sm text-center space-y-2">
+                                   <p className="text-[9px] font-black text-gray-400 uppercase tracking-widest leading-none">Basic Ops</p>
+                                   <p className="text-lg font-black text-amber-500 leading-none">{activePreview.basic_units.toLocaleString()}</p>
+                                </div>
+
+                                {/* Component: UCOE Target */}
+                                <div className="p-4 rounded-2xl bg-indigo-600 text-center space-y-2 shadow-xl shadow-indigo-600/30">
+                                   <p className="text-[9px] font-black text-indigo-100 uppercase tracking-widest leading-none">UCOE Target</p>
+                                   <p className="text-lg font-black text-white leading-none">
+                                      {activePreview.target_side === 'buy' ? '+' : '-'}{isTotalCloseMode ? (activePreview.missing_amount_to_zero ?? 0) : activePreview.action_units}
+                                   </p>
+                                </div>
+                             </div>
+
+                             {/* Final Output: Equilibrium in Contracts */}
+                             <div className="mt-8 p-6 bg-white dark:bg-gray-800 rounded-3xl border-2 border-dashed border-indigo-200 flex flex-col md:flex-row items-center justify-between gap-6">
+                                <div className="flex items-center gap-4">
+                                   <div className="p-3 bg-indigo-50 dark:bg-indigo-900/40 rounded-2xl">
+                                      <Hash className="w-6 h-6 text-indigo-600" />
+                                   </div>
+                                   <div>
+                                      <p className="text-[10px] font-black text-gray-400 uppercase leading-none mb-1">Equilibrio Final Proyectado</p>
+                                      <p className="text-sm font-black dark:text-white uppercase tracking-tight">Resultado Neto Unificado</p>
+                                   </div>
+                                </div>
+                                <div className={clsx("flex flex-col items-center px-10 py-3 rounded-2xl text-white shadow-xl min-w-[120px]", isTotalCloseMode || (activePreview.projected_net_pos ?? 0) === 0 ? "bg-emerald-600" : "bg-indigo-600")}>
+                                   <span className="text-2xl font-black leading-none">
+                                      {isTotalCloseMode ? '0' : (activePreview.projected_net_pos ?? 0).toLocaleString()}
+                                   </span>
+                                   <span className="text-[9px] font-black uppercase opacity-60 tracking-wider">Contratos</span>
+                                </div>
+                             </div>
+                          </div>
+
+                          {/* Strategy Config */}
+                          <div className="grid grid-cols-1 md:grid-cols-2 gap-8 items-center">
+                             <div className="space-y-4 p-6 bg-gray-50/50 dark:bg-gray-900 border border-gray-100 dark:border-gray-800 rounded-3xl">
+                                <div className="flex justify-between items-center px-1">
+                                   <span className="text-[10px] font-black uppercase text-gray-400 tracking-widest">Escalado Profit</span>
+                                   <span className="text-xs font-black text-indigo-600">{profitPc}%</span>
+                                </div>
+                                <input type="range" min="0.05" max="20" step="0.05" value={profitPc} onChange={(e) => setProfitPc(parseFloat(e.target.value))} className="w-full h-1.5 bg-gray-200 rounded-full appearance-none accent-indigo-600 cursor-pointer" />
+                             </div>
+
+                             <div className="flex flex-col gap-4">
+                                {canDoTotalClose && (
+                                   <button onClick={() => setIsTotalCloseMode(!isTotalCloseMode)} className={clsx("flex-1 px-6 py-4 rounded-2xl border-2 transition-all flex items-center justify-between group", isTotalCloseMode ? "bg-emerald-600 border-emerald-400 text-white shadow-lg shadow-emerald-600/20" : "bg-white dark:bg-gray-800 border-gray-200 hover:border-emerald-500")}>
+                                      <div className="text-left">
+                                         <p className="text-[10px] font-black uppercase">Modo Full Zero</p>
+                                         <p className="text-[9px] font-bold opacity-70 leading-none mt-1">Sincronización Total (Pos+Algo+Basic)</p>
+                                      </div>
+                                      <CheckCircle2 className={clsx("w-5 h-5", isTotalCloseMode ? "text-white" : "text-gray-200 group-hover:text-emerald-500")} />
+                                   </button>
+                                )}
+                                <div className="px-6 py-4 rounded-2xl bg-gray-50 dark:bg-gray-900 border border-gray-100 dark:border-gray-800 flex items-center gap-3">
+                                   <ShieldCheck className="w-5 h-5 text-gray-400" />
+                                   <p className="text-[10px] font-black uppercase text-gray-500">ReduceOnly: <span className="text-indigo-600 font-black">{activePreview.reduce_only || isTotalCloseMode ? 'SI' : 'NO'}</span></p>
+                                </div>
+                             </div>
+                          </div>
+
+                          <div className="mt-4 pt-4 border-t border-gray-100 dark:border-gray-800">
+                             <button disabled={executeMutation.isPending || executeBulkMutation.isPending} onClick={handleExecute} className={clsx("w-full py-6 rounded-[2.5rem] text-xl font-black text-white shadow-2xl transition-all active:scale-95 flex items-center justify-center gap-4", isTotalCloseMode ? "bg-emerald-600 shadow-emerald-500/40 hover:bg-emerald-700" : "bg-indigo-600 shadow-indigo-500/40 hover:bg-indigo-700")}>
+                                {executeMutation.isPending || executeBulkMutation.isPending ? <Loader2 className="w-6 h-6 animate-spin" /> : <Zap className="w-6 h-6 fill-current" />}
+                                <span>{isTotalCloseMode ? 'Ejecutar Cierre Zero V5.9' : 'Lanzar Estrategia V5.9'}</span>
+                             </button>
+                             <p className="text-center text-[9px] font-black text-gray-400 mt-6 uppercase tracking-[0.4em] opacity-30 italic">Engine V5.9 Stability · Time Sync Active</p>
+                          </div>
+                       </div>
+                    )}
+                 </div>
+              </div>
+           ) : (
+              <div className="h-full border-4 border-dashed border-gray-100 dark:border-gray-800 rounded-[3rem] p-20 flex flex-col items-center justify-center text-center space-y-8 grayscale">
+                 <Calculator className="w-20 h-20 text-gray-200" />
+                 <div className="space-y-4">
+                    <h3 className="text-xl font-black text-gray-400 uppercase tracking-widest leading-none">Esperando Selección</h3>
+                    <p className="text-[11px] font-bold text-gray-400 max-w-xs leading-relaxed uppercase">El motor Dual Insight unifica los contratos necesarios para un control total y estable.</p>
+                 </div>
+              </div>
+           )}
+        </div>
+      </div>
+    </div>
+  )
+}
