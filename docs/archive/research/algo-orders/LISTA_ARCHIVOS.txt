@@ -1,0 +1,163 @@
+═══════════════════════════════════════════════════════════════════════════════
+ 📦 PAQUETE COMPLETO: OBTENER TP/SL PENDIENTES DE BINANCE FUTURES
+═══════════════════════════════════════════════════════════════════════════════
+
+📁 ARCHIVOS INCLUIDOS:
+
+1. 📌 RESUMEN_EJECUTIVO.md
+   └─ Resumen de 1 página con lo esencial
+   └─ Tiempo: 3-5 minutos
+   └─ Ideal para: Empezar YA
+   └─ Contiene: Endpoint, ejemplos rápidos, checklist
+
+2. ⚡ REFERENCIA_RAPIDA.md
+   └─ Referencia de una página para consultar rápidamente
+   └─ Tiempo: 2-3 minutos
+   └─ Ideal para: Desarrolladores que quieren datos rápido
+   └─ Contiene: Parámetros, comandos, solución de errores
+
+3. 🐍 get_tp_sl.py
+   └─ Script Python listo para usar
+   └─ Tiempo: 5 minutos de setup
+   └─ Ideal para: Quienes no quieren escribir código
+   └─ Contiene: Clase BinanceFuturesTPSL con múltiples funciones
+
+4. 📖 GUIA_USO_GET_TP_SL.md
+   └─ Guía completa de cómo usar el script
+   └─ Tiempo: 10-15 minutos
+   └─ Ideal para: Aprender todas las opciones del script
+   └─ Contiene: Instalación, ejemplos, troubleshooting
+
+5. 📚 obtener_tp_sl_pendientes_futuros.md
+   └─ Guía técnica detallada con ejemplos en profundidad
+   └─ Tiempo: 20-30 minutos
+   └─ Ideal para: Integrar en sistemas propios
+   └─ Contiene: Explicaciones técnicas, código completo, problemas comunes
+
+6. 🔍 binance_pending_orders_api_endpoints.md
+   └─ Referencia COMPLETA de todos endpoints de Binance
+   └─ Tiempo: 30-45 minutos
+   └─ Ideal para: Referencia exhaustiva
+   └─ Contiene: Todos los endpoints (Spot + Futures)
+
+7. 📋 INDEX.md
+   └─ Índice que te ayuda a elegir qué archivo leer
+   └─ Tiempo: 5 minutos
+   └─ Ideal para: Cuando no sabes por dónde empezar
+   └─ Contiene: Matriz de decisión, learning paths
+
+8. 🤖 CCXT_OPCIONES_ALGO_ORDERS.md
+   └─ Todas las opciones para usar CCXT con Algo Orders
+   └─ Tiempo: 30-45 minutos
+   └─ Ideal para: Integración con bots multi-exchange
+
+9. ⚡ CCXT_RESUMEN_RAPIDO.md
+   └─ Guía ultra-rápida de CCXT
+   └─ Tiempo: 2 minutos
+
+10. 📝 LISTA_ARCHIVOS.txt
+    └─ Este listado de archivos
+
+11. 🏆 master_summary_algo_orders_research.md
+    └─ Resumen maestro de TODA la investigación
+    └─ Ideal para tener una visión global completa
+
+12. 📘 comprehensive_binance_futures_algo_guide.md
+    └─ Guía técnica consolidada de Algo Orders (Copia master)
+
+13. 🛠️ binance_futures_oto_guide.md
+    └─ Guía específica para OTO (One-Triggers-Other) en Futures
+
+═══════════════════════════════════════════════════════════════════════════════
+
+🚀 INICIO RÁPIDO (RECOMENDADO)
+
+Paso 1: Lee RESUMEN_EJECUTIVO.md (3 min)
+Paso 2: Instala el script:
+        pip install requests tabulate
+        
+Paso 3: Ejecuta:
+        python3 get_tp_sl.py --api-key "TU_KEY" --api-secret "TU_SECRET"
+
+Paso 4: ¡Listo! Verás todos tus TP/SL pendientes
+
+═══════════════════════════════════════════════════════════════════════════════
+
+📊 COMPARACIÓN DE OPCIONES
+
+┌──────────────────┬─────────────────┬──────────────┬──────────────────┐
+│ OPCIÓN           │ TIEMPO SETUP     │ COMPLEJIDAD  │ MEJOR PARA       │
+├──────────────────┼─────────────────┼──────────────┼──────────────────┤
+│ Script Python    │ 5 minutos       │ Muy Baja     │ Usar rápido      │
+│ cURL directo     │ 1 minuto        │ Media        │ Bash/Testing     │
+│ Código Python    │ 10 minutos      │ Media        │ Integración      │
+│ Postman API      │ 2 minutos       │ Muy Baja     │ Pruebas UI       │
+└──────────────────┴─────────────────┴──────────────┴──────────────────┘
+
+═══════════════════════════════════════════════════════════════════════════════
+
+🎯 MATRIZ DE SELECCIÓN RÁPIDA
+
+¿QUIÉN ERES?                           ¿QUÉ HACER?
+────────────────────────────────────────────────────────────────────────────
+Trader que quiere ver TP/SL YA    →    Ejecuta: python3 get_tp_sl.py --api-key X --api-secret Y
+Desarrollador integrador          →    Lee: obtener_tp_sl_pendientes_futuros.md
+Necesito referencia completa      →    Lee: binance_pending_orders_api_endpoints.md
+No sé por dónde empezar          →    Lee: INDEX.md (te orienta)
+Solo quiero recordar el endpoint  →    Lee: REFERENCIA_RAPIDA.md
+Necesito guía visual del script   →    Lee: GUIA_USO_GET_TP_SL.md
+
+═══════════════════════════════════════════════════════════════════════════════
+
+✨ LO MÁS IMPORTANTE
+
+ENDPOINT:  GET /fapi/v1/openAlgoOrders
+SCRIPT:    python3 get_tp_sl.py --api-key KEY --api-secret SECRET
+IDENTIFICA: orderType = "TAKE_PROFIT*" (TP) o "STOP*" (SL)
+ESTADO:    algoStatus = "NEW" (pendiente)
+
+═══════════════════════════════════════════════════════════════════════════════
+
+🔗 ARCHIVOS INTERCONECTADOS
+
+RESUMEN_EJECUTIVO
+    ├─→ Si necesitas ejemplos detallados: obtener_tp_sl_pendientes_futuros.md
+    ├─→ Si necesitas referencia rápida: REFERENCIA_RAPIDA.md
+    └─→ Si necesitas usar el script: get_tp_sl.py + GUIA_USO_GET_TP_SL.md
+
+═══════════════════════════════════════════════════════════════════════════════
+
+💡 CONSEJOS
+
+✅ EMPIEZA AQUÍ: RESUMEN_EJECUTIVO.md o get_tp_sl.py
+✅ SI TIENES DUDAS: INDEX.md te orienta
+✅ SI NECESITAS DETALLES: obtener_tp_sl_pendientes_futuros.md
+✅ SI NECESITAS TODO: binance_pending_orders_api_endpoints.md
+
+═══════════════════════════════════════════════════════════════════════════════
+
+📞 SOPORTE RÁPIDO
+
+Error "-2015 Invalid API-key" 
+    → Tu API key no tiene permisos para Futures
+    → Ve a https://www.binance.com/en/usercenter/settings/api-management
+    → Habilita "Futures"
+
+Error "No module named requests"
+    → pip install requests
+
+No veo mis TP/SL
+    → Pueden estar EXECUTED o CANCELED
+    → Consulta obtener_tp_sl_pendientes_futuros.md → Problema 1
+
+═══════════════════════════════════════════════════════════════════════════════
+
+📅 ACTUALIZACIÓN
+
+Todos los archivos fueron creados/actualizados: Abril 2, 2026
+Compatible con: Binance Futures (USDT-M)
+Cambios recientes: Soporte para Algo Orders (Dec 9, 2025+)
+
+═══════════════════════════════════════════════════════════════════════════════
+
+Ahora tienes TODO para obtener tus TP/SL pendientes de Binance Futures. 🚀

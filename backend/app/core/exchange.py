@@ -79,6 +79,27 @@ class ExchangeManager:
                 logger.error(f"[EXCHANGE] Error fetching orders for {norm_sym}: {e}")
             return []
 
+    async def fetch_my_trades(self, symbol: str, since: Optional[int] = None, limit: int = 1000) -> List[Dict[str, Any]]:
+        await self._rate_limit()
+        exchange = await self.get_exchange()
+        norm_sym = await self.normalize_symbol(symbol)
+        try:
+            return await exchange.fetch_my_trades(norm_sym, since=since, limit=limit)
+        except Exception as e:
+            logger.error(f"[EXCHANGE] Error in fetch_my_trades for {norm_sym}: {e}")
+            return []
+
+    async def fetch_balance(self) -> Dict[str, Any]:
+        await self._rate_limit()
+        exchange = await self.get_exchange()
+        try:
+            res = await exchange.fetch_balance()
+            logger.debug(f"[EXCHANGE] fetch_balance | Assets: {list(res.get('total', {}).keys())}")
+            return res
+        except Exception as e:
+            logger.error(f"[EXCHANGE] Error fetching balance: {e}")
+            raise e
+
     async def get_open_positions(self, symbol: Optional[str] = None) -> List[Dict[str, Any]]:
         await self._rate_limit()
         exchange = await self.get_exchange()
@@ -118,44 +139,39 @@ class ExchangeManager:
     async def fetch_algo_open_orders(self, symbol: Optional[str] = None) -> List[Dict[str, Any]]:
         """
         Fetches conditional orders (TP/SL) from Binance Algo Service via CCXT native method.
+        Returns RAW Binance data tagged with _source='algo'.
         """
         await self._rate_limit()
         exchange = await self.get_exchange()
         
         params = {}
         if symbol:
-            # Native methods often require Binance ID, load_markets ensures we have them
             await exchange.load_markets()
             norm_sym = await self.normalize_symbol(symbol)
             market = exchange.market(norm_sym)
             params['symbol'] = market['id'] # e.g. 1000PEPEUSDC
 
         try:
-            # Direct call to fapiprivate_get_openalgoorders (CCXT 4.5+)
-            raw_orders = await exchange.fapiprivate_get_openalgoorders(params)
+            # Manual request for compatibility with CCXT 4.1.94
+            # Endpoint: GET /fapi/v1/openAlgoOrders
+            res = await exchange.request('openAlgoOrders', 'fapiPrivate', 'GET', params)
+            raw_orders = res if isinstance(res, list) else res.get('orders', res)
             
-            # Normalize to match CCXT's fetchFetchOpenOrders structure if possible, 
-            # but for now we'll just ensure they have the basics
-            unified_algo = []
+            # Tag with _source for OrderFactory compatibility
             for o in raw_orders:
-                # CCXT usually doesn't unify these yet, so we map essential fields
-                unified_algo.append({
-                    'id': str(o.get('algoId')),
-                    'symbol': symbol or o.get('symbol'),
-                    'type': o.get('orderType'),
-                    'side': o.get('side'),
-                    'amount': float(o.get('quantity', 0)),
-                    'price': float(o.get('triggerPrice', 0)),
-                    'status': 'open' if o.get('algoStatus') == 'NEW' else o.get('algoStatus'),
-                    'info': o,
-                    'is_algo': True
-                })
-            return unified_algo
+                o['_source'] = 'algo'
+                o['is_algo'] = True # Legacy support
+            
+            return raw_orders
         except Exception as e:
             logger.error(f"[EXCHANGE] Error fetching algo orders: {e}")
             return []
 
     async def fetch_open_orders(self, symbol: Optional[str] = None) -> List[Dict[str, Any]]:
+        """
+        Returns a combined list of Standard orders (CCXT Unified) and Algo orders (Raw Binance).
+        Use OrderFactory.create() to process the results of this method.
+        """
         await self._rate_limit()
         exchange = await self.get_exchange()
         norm_sym = await self.normalize_symbol(symbol) if symbol else None
@@ -163,24 +179,21 @@ class ExchangeManager:
         try:
             # 1. Standard orders
             t_std = exchange.fetch_open_orders(norm_sym)
-            # 2. Algo orders (TP/SL) using our new native-based method
+            # 2. Algo orders (TP/SL) 
             t_algo = self.fetch_algo_open_orders(symbol)
 
             std_res, algo_res = await asyncio.gather(t_std, t_algo, return_exceptions=True)
 
             standard_orders = std_res if not isinstance(std_res, Exception) else []
-            combined = algo_res if not isinstance(algo_res, Exception) else []
+            algo_orders = algo_res if not isinstance(algo_res, Exception) else []
 
-            # Deduplicate by ID
-            seen_ids = {str(o.get('id')) for o in combined if o.get('id')}
-            
+            # Tag standard orders
             for o in standard_orders:
-                oid = str(o.get('id'))
-                if oid not in seen_ids:
-                    combined.append(o)
-                    seen_ids.add(oid)
+                if '_source' not in o: o['_source'] = 'standard'
 
-            ExchangeLogger.log_request('fetch_open_orders_unified', {'symbol': norm_sym}, response=combined)
+            combined = standard_orders + algo_orders
+
+            ExchangeLogger.log_request('fetch_open_orders', {'symbol': norm_sym}, response=f"Total: {len(combined)} (Std: {len(standard_orders)}, Algo: {len(algo_orders)})")
             return combined
 
         except Exception as e:
