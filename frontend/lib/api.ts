@@ -235,6 +235,11 @@ export interface UcoePreview {
   open_tp_qty?: number
   algo_units?: number
   basic_units?: number
+  algo_breakdown?: {
+    tp: number
+    sl: number
+    trailing: number
+  }
   pos_units?: number
   action_units?: number
   algo_notional_est?: number

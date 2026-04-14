@@ -590,36 +590,37 @@ async def get_trade_history(symbol: str = "BTC/USDT", logic: str = "fifo", sort_
                     entry_fills=op.get('entry_fills', []), # Enable UI Expansion for Open Positions
                 ))
                 
-        # Append unmatched open orders as standalone Pending Rows
+        # Append unmatched or all open orders as Pending Rows
+        # We include ALL open orders here to ensure visibility in the "Órdenes Abiertas" section
+        # even if they are already matched/linked to a position for PnL calculations.
         standalone_pending = []
         for order in open_orders:
-            if order.id not in matched_order_ids:
-                # Unique synthetic ID for pending orders
-                pending_id = -int(str(order.id).replace('B', '').replace('C', '') or abs(hash(str(order.datetime)))) % 1000000
-                
-                standalone_pending.append(TradeResponse(
-                    id=pending_id,
-                    symbol=symbol,
-                    entry_side=(order.side or 'buy').lower(),
-                    entry_price=order.price,
-                    entry_amount=order.amount,
-                    entry_fee=0.0,
-                    entry_datetime=order.datetime,
-                    exit_side='',
-                    exit_price=None,
-                    exit_amount=None,
-                    exit_fee=None,
-                    exit_datetime=None,
-                    pnl_net=0.0,
-                    pnl_percentage=0.0,
-                    duration_seconds=0,
-                    created_at=order.datetime,
-                    is_pending=True,
-                    order_type=order.type,
-                    entry_order_id=live_prefix_id(order.id),
-                    entry_order_tags=tags_from_open_order_response(order),
-                    exit_order_tags=["PENDING"],
-                ))
+            # Unique synthetic ID for pending orders
+            pending_id = -int(str(order.id).replace('B', '').replace('C', '') or abs(hash(str(order.datetime)))) % 1000000
+            
+            standalone_pending.append(TradeResponse(
+                id=pending_id,
+                symbol=symbol,
+                entry_side=(order.side or 'buy').lower(),
+                entry_price=order.price,
+                entry_amount=order.amount,
+                entry_fee=0.0,
+                entry_datetime=order.datetime,
+                exit_side='',
+                exit_price=None,
+                exit_amount=None,
+                exit_fee=None,
+                exit_datetime=None,
+                pnl_net=0.0,
+                pnl_percentage=0.0,
+                duration_seconds=0,
+                created_at=order.datetime,
+                is_pending=True,
+                order_type=order.type,
+                entry_order_id=live_prefix_id(order.id),
+                entry_order_tags=tags_from_open_order_response(order),
+                exit_order_tags=["PENDING"],
+            ))
 
         # Return combined trades processed by the Strategy Pattern formatter
         if sort_by == "oldest":

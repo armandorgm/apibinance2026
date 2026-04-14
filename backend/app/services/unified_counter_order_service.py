@@ -54,41 +54,38 @@ class UnifiedCounterOrderService:
         return candidates
 
     @staticmethod
-    async def get_detailed_open_balance(symbol: str) -> Dict[str, float]:
+    async def get_detailed_open_balance(symbol: str) -> Dict[str, Any]:
         """
         Calculates the net quantity of open orders, split by Algo and Basic types.
         Uses raw exchange contracts (no factor applied).
         """
+        from app.domain.orders.order_factory import OrderFactory
+        from app.db.database import OrderSource
+
         open_orders = await exchange_manager.fetch_open_orders(symbol)
         algo_qty = 0.0
         basic_qty = 0.0
+        algo_breakdown = {"tp": 0.0, "sl": 0.0, "trailing": 0.0}
         
         for o in open_orders:
-            # Classification: Use our new 'is_algo' flag if available, fallback to legacy
-            is_algo = o.get('is_algo', False)
-            if not is_algo:
-                o_type = str(o.get('type', '')).upper()
-                info = o.get('info', {})
-                o_algo_type = str(info.get('algoType', '')).upper()
-                raw_order_type = str(info.get('orderType', '')).upper()
-                
-                is_algo = (
-                    o_algo_type == 'CONDITIONAL' or 
-                    o_type in ['TAKE_PROFIT', 'TAKE_PROFIT_MARKET', 'TRAILING_STOP_MARKET'] or
-                    'TAKE_PROFIT' in raw_order_type or 
-                    'TRAILING' in raw_order_type
-                )
+            # V5.9: Use SOLID Factory for consistent classification
+            domain_order = OrderFactory.create(o, set())
+            is_algo = domain_order.source == OrderSource.ALGO
             
-            # Exclusion Logic: Skip Stop Loss (Emergency tools)
-            # We check info directly for Binance-specific types if standard mapping is ambiguous
-            info = o.get('info', {})
-            raw_type = str(info.get('orderType', o.get('type', ''))).upper()
-            if "STOP" in raw_type and "TRAILING" not in raw_type and "TAKE_PROFIT" not in raw_type:
-                continue
-            
-            qty = float(o.get('amount') or 0)
-            side = o.get('side', '').lower()
+            qty = domain_order.amount
+            side = domain_order.side.lower()
             signed_qty = qty if side == 'buy' else -qty
+
+            if is_algo:
+                kind = getattr(domain_order, 'conditional_kind', None)
+                if kind == 'take_profit': algo_breakdown['tp'] += signed_qty
+                elif kind == 'stop_loss': algo_breakdown['sl'] += signed_qty
+                elif kind == 'trailing': algo_breakdown['trailing'] += signed_qty
+            
+            # Exclusion Logic: Skip Stop Loss (Emergency tools) from main sum
+            order_type = getattr(domain_order, 'order_type', '').upper()
+            if "STOP" in order_type and "TRAILING" not in order_type and "TAKE_PROFIT" not in order_type:
+                continue
             
             if is_algo: algo_qty += signed_qty
             else: basic_qty += signed_qty
@@ -96,6 +93,7 @@ class UnifiedCounterOrderService:
         return {
             "algo_units": round(algo_qty, 8),
             "basic_units": round(basic_qty, 8),
+            "algo_breakdown": {k: round(v, 8) for k, v in algo_breakdown.items()},
             "algo_contracts": round(algo_qty, 8),
             "basic_contracts": round(basic_qty, 8),
             "factor": 1.0
