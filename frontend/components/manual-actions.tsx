@@ -19,6 +19,8 @@ export function ManualActions({ symbol }: ManualActionsProps) {
   
   const [useCustomThreshold, setUseCustomThreshold] = useState(false)
   const [threshold, setThreshold] = useState(0.0005)
+  
+  const [profitPc, setProfitPc] = useState(0.005) // 0.5% default for V2
 
   const handleAction = async (actionType: string) => {
     try {
@@ -28,6 +30,7 @@ export function ManualActions({ symbol }: ManualActionsProps) {
         amount: parseFloat(amount),
         cooldown: useCustomCooldown ? cooldown : undefined,
         threshold: useCustomThreshold ? threshold : undefined,
+        profit_pc: profitPc, // Pass profit_pc for V2
       })
       alert(`Éxito: Acción ${actionType} iniciada en ${symbol}`)
     } catch (error: any) {
@@ -76,6 +79,23 @@ export function ManualActions({ symbol }: ManualActionsProps) {
                   className="w-full pl-8 pr-4 py-2 border border-gray-200 dark:border-gray-700 rounded-xl bg-white dark:bg-gray-950 text-gray-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-indigo-500"
                 />
               </div>
+            </div>
+
+            {/* Profit Setting for V2 */}
+            <div className="space-y-3 pt-4 border-t border-gray-100 dark:border-gray-800">
+              <div className="flex items-center justify-between">
+                <label className="text-xs font-bold text-indigo-600 dark:text-indigo-400 uppercase">Profit Target (V2)</label>
+                <span className="text-xs font-mono font-bold">{(profitPc * 100).toFixed(1)}%</span>
+              </div>
+              <input
+                type="range"
+                min="0.001"
+                max="0.05"
+                step="0.001"
+                value={profitPc}
+                onChange={(e) => setProfitPc(parseFloat(e.target.value))}
+                className="w-full accent-indigo-600"
+              />
             </div>
           </div>
 
@@ -140,7 +160,7 @@ export function ManualActions({ symbol }: ManualActionsProps) {
         <div className="grid grid-cols-1 md:grid-cols-2 gap-4 pt-4">
           <button
             disabled={isLoading}
-            className="flex items-center justify-center h-14 rounded-2xl font-bold text-white transition-all transform hover:scale-[1.02] active:scale-[0.98] disabled:opacity-50 disabled:scale-100 bg-gradient-to-r from-indigo-600 to-violet-600 shadow-lg shadow-indigo-500/20"
+            className="flex items-center justify-center h-14 rounded-2xl font-bold text-white transition-all transform hover:scale-[1.02] active:scale-[0.98] disabled:opacity-50 disabled:scale-100 bg-gradient-to-r from-gray-700 to-gray-900 shadow-lg"
             onClick={() => handleAction('ADAPTIVE_OTO')}
           >
             {isLoading ? (
@@ -148,13 +168,26 @@ export function ManualActions({ symbol }: ManualActionsProps) {
             ) : (
               <Zap className="mr-2 h-5 w-5 fill-white" />
             )}
-            Chase Entry (Post-Only)
+            Chase V1 (CCXT)
+          </button>
+
+          <button
+            disabled={isLoading}
+            className="flex items-center justify-center h-14 rounded-2xl font-bold text-white transition-all transform hover:scale-[1.02] active:scale-[0.98] disabled:opacity-50 disabled:scale-100 bg-gradient-to-r from-indigo-600 to-violet-600 shadow-lg shadow-indigo-500/20"
+            onClick={() => handleAction('ADAPTIVE_OTO_V2')}
+          >
+            {isLoading ? (
+              <Loader2 className="mr-2 h-5 w-5 animate-spin" />
+            ) : (
+              <Zap className="mr-2 h-5 w-5 fill-white" />
+            )}
+            Chase V2 (Native/Official)
           </button>
           
           <button
             onClick={() => handleAction('BUY_MIN_NOTIONAL')}
             disabled={isLoading}
-            className="flex items-center justify-center h-14 rounded-2xl font-bold border-2 border-gray-200 dark:border-gray-700 text-gray-700 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-gray-800 transition-all disabled:opacity-50"
+            className="flex items-center justify-center h-14 rounded-2xl font-bold border-2 border-gray-200 dark:border-gray-700 text-gray-700 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-gray-800 transition-all disabled:opacity-50 md:col-span-2"
           >
             <ShoppingCart className="mr-2 h-5 w-5" />
             Market Buy ($5)

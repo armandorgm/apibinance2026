@@ -29,9 +29,10 @@ class TradingBot:
         # Start Stream listener (Orders logic in background)
         from app.core.stream_service import stream_manager
         await stream_manager.start()
+        await stream_manager.recover_active_subscriptions()
         
         self._task = asyncio.create_task(self._run_loop())
-        print(f"[BOT] Started Pipeline Engine & Stream Service")
+        print(f"[BOT] Started Pipeline Engine, Stream Service & Recovery")
 
     async def stop(self):
         self.is_running = False

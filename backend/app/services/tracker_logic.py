@@ -61,6 +61,70 @@ class AtomicMatchStrategy(MatchStrategy):
 
         return matched_trades
 
+class IntentMatchStrategy(MatchStrategy):
+    """
+    Intent-based Matcher (Atomic Forward Matcher).
+    Matches an Entry chronologically forward to an Exit of EXACT amount.
+    Ignores STOP LOSS logic explicitly to map only intended targets (Take Profit, Limits).
+    Consumed exits are fully popped/removed to prevent double spending.
+    """
+    def match(self, tracker: 'TradeTracker', fills: List[Fill], session: Optional[Session] = None) -> List[Dict[str, Any]]:
+        grouped_orders = tracker._group_fills_by_order(fills, session=session)
+        
+        # Filtrar descartando los STOP LOSS por regla de negocio
+        # Solo queremos emparejar INTENCIÓN (TP o Limit)
+        filtered_orders = []
+        for o in grouped_orders:
+            ot = (o.get('order_type') or '').upper()
+            
+            # Regla de descarte de SL (Stop Loss)
+            # Si el tipo contiene STOP pero NO contiene TAKE_PROFIT, lo tratamos como SL
+            is_sl = 'STOP' in ot and 'TAKE_PROFIT' not in ot
+            if not is_sl:
+                filtered_orders.append(o)
+
+        buys = [o for o in filtered_orders if o['side'] == 'buy']
+        sells = [o for o in filtered_orders if o['side'] == 'sell']
+        
+        matched_trades = []
+        used_sells = set()
+        
+        # Sort chronologically oldest first
+        buys.sort(key=lambda x: x['timestamp'])
+        sells.sort(key=lambda x: x['timestamp'])
+        
+        # Forward Matching: For each Buy, look for its perfect Exit in the future
+        for buy in buys:
+            if not buy.get('can_be_entry', True):
+                continue
+                
+            bracket_sell = None
+            for sell in sells:
+                # Regla de Consumo Único (Pop)
+                if sell['order_id'] in used_sells:
+                    continue
+                    
+                # Regla Temporal Hacia Adelante (La salida debe ser posterior o igual a la entrada)
+                if sell['timestamp'] < buy['timestamp']:
+                    continue
+                    
+                # Emparejamiento Atómico Estricto de Cantidad (con tolerancia para Nudging)
+                if abs(buy['amount'] - sell['amount']) < 1e-4:
+                    bracket_sell = sell
+                    used_sells.add(sell['order_id'])
+                    break  # Pop & Break
+                    
+            if bracket_sell:
+                pnl_data = tracker.calculate_pnl(
+                    entry_price=buy['price'], entry_amount=buy['amount'], entry_fee=buy['fee'],
+                    exit_price=bracket_sell['price'], exit_amount=bracket_sell['amount'], exit_fee=bracket_sell['fee'],
+                    entry_side='buy'
+                )
+                
+                matched_trades.append(tracker._format_trade_data(buy, bracket_sell, pnl_data))
+
+        return matched_trades
+
 class FIFOMatchStrategy(MatchStrategy):
     """
     Standard FIFO (First-In-First-Out). 
@@ -144,6 +208,82 @@ class LIFOMatchStrategy(MatchStrategy):
                 buy['amount'] -= match_qty
                 buy['fee'] -= buy_fee_share
                 remaining_sell_qty -= match_qty
+
+        return matched_trades
+
+
+class LifecycleNettingStrategy(MatchStrategy):
+    """
+    Bio-Atomic Lifecycle (Binance Netting Mode).
+    Groups trades into "Life Cycles" that start and end at 0 balance.
+    Matches the entire cycle as a single block based on net volume.
+    """
+    def match(self, tracker: 'TradeTracker', fills: List[Fill], session: Optional[Session] = None) -> List[Dict[str, Any]]:
+        if not fills:
+            return []
+            
+        # We need a copy of fills because we might modify them (grouped_orders is fine too)
+        orders = tracker._group_fills_by_order(fills, session=session)
+        
+        matched_trades = []
+        current_cycle = []
+        current_balance = 0.0
+        
+        for o in orders:
+            current_cycle.append(o)
+            side_mult = 1.0 if o['side'] == 'buy' else -1.0
+            current_balance += o['amount'] * side_mult
+            
+            # Check if cycle closed (balance returns to 0)
+            if abs(current_balance) < 1e-8:
+                # Close Cycle
+                first_fill = current_cycle[0]
+                last_fill = current_cycle[-1]
+                
+                cycle_buys = [x for x in current_cycle if x['side'] == 'buy']
+                cycle_sells = [x for x in current_cycle if x['side'] == 'sell']
+                
+                total_buy_qty = sum(x['amount'] for x in cycle_buys)
+                total_sell_qty = sum(x['amount'] for x in cycle_sells)
+                
+                # Total Volume of the cycle is the amount realized
+                total_amount = max(total_buy_qty, total_sell_qty)
+                
+                # Weighted average prices
+                avg_buy_price = sum(x['price'] * x['amount'] for x in cycle_buys) / total_buy_qty if total_buy_qty > 0 else 0
+                avg_sell_price = sum(x['price'] * x['amount'] for x in cycle_sells) / total_sell_qty if total_sell_qty > 0 else 0
+                
+                total_buy_fee = sum(x['fee'] for x in cycle_buys)
+                total_sell_fee = sum(x['fee'] for x in cycle_sells)
+                
+                # In Netting mode, the cycle is 0-to-0.
+                # We determine the direction of the cycle by the side of the first fill.
+                cycle_side = first_fill['side']
+                
+                if cycle_side == 'buy':
+                    entry_price, exit_price = avg_buy_price, avg_sell_price
+                    entry_fee, exit_fee = total_buy_fee, total_sell_fee
+                else:
+                    # Short cycle
+                    entry_price, exit_price = avg_sell_price, avg_buy_price
+                    entry_fee, exit_fee = total_sell_fee, total_buy_fee
+                
+                pnl_data = tracker.calculate_pnl(
+                    entry_price=entry_price, entry_amount=total_amount, entry_fee=entry_fee,
+                    exit_price=exit_price, exit_amount=total_amount, exit_fee=exit_fee,
+                    entry_side=cycle_side
+                )
+                
+                # Build synthetic "Buy" and "Sell" order objects for the formatter
+                # using the timestamps of the cycle start and end.
+                synth_buy = {**first_fill, 'price': entry_price, 'amount': total_amount, 'fee': entry_fee, 'side': cycle_side}
+                synth_sell = {**last_fill, 'price': exit_price, 'amount': total_amount, 'fee': exit_fee, 'side': ('sell' if cycle_side == 'buy' else 'buy')}
+                
+                matched_trades.append(tracker._format_trade_data(synth_buy, synth_sell, pnl_data))
+                
+                # Reset
+                current_cycle = []
+                current_balance = 0.0
 
         return matched_trades
 
@@ -329,6 +469,8 @@ class TradeTracker:
             "lifo": LIFOMatchStrategy(),
             "atomic_fifo": AtomicMatchStrategy(is_fifo=True),
             "atomic_lifo": AtomicMatchStrategy(is_fifo=False),
+            "intent_fifo": IntentMatchStrategy(),
+            "binance_netting": LifecycleNettingStrategy(),
         }
         
         strategy = strategies.get(strategy_name.lower(), strategies["atomic_fifo"])

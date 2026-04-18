@@ -28,6 +28,11 @@ class ChaseDecisionEngine:
         cooldown = cooldown_seconds if cooldown_seconds is not None else ChaseDecisionEngine.COOLDOWN_SECONDS
         threshold = price_threshold if price_threshold is not None else ChaseDecisionEngine.PRICE_DIFF_THRESHOLD
 
+        # CRITICAL: If we are in RECOVERING state, we have NO order in the market.
+        # We MUST bypass threshold checks to get an order in as soon as possible.
+        if process.sub_status == "RECOVERING" or process.entry_order_id == "INITIAL_REJECTED":
+            return True
+
         # 1. Time Throttling (Cooldonw)
         # Use updated_at to track last execution
         last_update = process.updated_at or process.created_at

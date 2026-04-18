@@ -1,8 +1,10 @@
 import ccxt.async_support as ccxt
+import ccxt.pro as ccxtpro
 import asyncio
 from typing import Dict, Any, List, Optional
 from app.core.logger import logger
 import time
+from app.core.binance_native import binance_native
 
 class ExchangeLogger:
     @staticmethod
@@ -14,13 +16,50 @@ class ExchangeLogger:
 
 class ExchangeManager:
     """
-    Manages Binance Futures connection via CCXT.
-    V5.9 Stability Release: Handles clock sync (-1021) and symbol resilience.
+    Manages CCXT instance and official Binance Native driver.
     """
     def __init__(self):
         self._exchange: Optional[ccxt.binance] = None
+        self._pro_exchange: Optional[ccxtpro.binance] = None
+        self._native = binance_native
         self._last_request_time = 0
         self._rate_limit_delay = 0.1  # 100ms between critical calls
+        self._price_registry: Dict[str, float] = {} # In-memory tick storage (DIAS Optimization)
+
+    def update_price(self, symbol: str, price: float, side_data: Optional[Dict[str, float]] = None):
+        """Update the latest price and optional bid/ask in volatile memory."""
+        self._price_registry[symbol] = price
+        if side_data:
+            # Store full ticker info if provided
+            if not hasattr(self, '_ticker_registry'):
+                self._ticker_registry = {}
+            self._ticker_registry[symbol] = side_data
+
+    def get_price(self, symbol: str) -> Optional[float]:
+        """Retrieve the latest cached price from memory."""
+        return self._price_registry.get(symbol)
+
+    def get_ticker(self, symbol: str) -> Optional[Dict[str, float]]:
+        """Retrieve full bid/ask/last from memory."""
+        if hasattr(self, '_ticker_registry'):
+            return self._ticker_registry.get(symbol)
+        return None
+
+    async def get_pro_exchange(self) -> ccxtpro.binance:
+        if self._pro_exchange is None:
+            from app.core.config import settings
+            self._pro_exchange = ccxtpro.binance({
+                'apiKey': settings.BINANCE_API_KEY,
+                'secret': settings.BINANCE_API_SECRET,
+                'options': {
+                    'defaultType': 'future',
+                    'adjustForTimeDifference': True,
+                    'newListenKeyReleaseAsync': True,
+                    'fetchCurrencies': False
+                },
+                'enableRateLimit': True
+            })
+        return self._pro_exchange
 
     async def get_exchange(self) -> ccxt.binance:
         if self._exchange is None:
@@ -32,7 +71,8 @@ class ExchangeManager:
                     'defaultType': 'future',
                     'warnOnFetchOpenOrdersWithoutSymbol': False,
                     'adjustForTimeDifference': True,  # Fix for Error -1021
-                    'recvWindow': 10000               # 10s window for high latency
+                    'recvWindow': 10000,              # 10s window for high latency
+                    'fetchCurrencies': False          # Avoid -2015 error on Futures-only keys
                 },
                 'enableRateLimit': True
             })
@@ -55,7 +95,10 @@ class ExchangeManager:
         
         try:
             exchange = await self.get_exchange()
-            await exchange.load_markets()
+            # Ensure markets are loaded (resilient against multiple calls)
+            if not exchange.markets:
+                await exchange.load_markets()
+            
             # 1. Direct match in markets (keys use standard format)
             if symbol in exchange.markets: return symbol
             
@@ -64,8 +107,41 @@ class ExchangeManager:
             for m in exchange.markets.values():
                 if m.get('id') == symbol_up or m.get('id') == symbol:
                     return m.get('symbol')
-        except Exception: pass
+        except Exception as e:
+            logger.warning(f"[EXCHANGE] normalize_symbol failed for {symbol}: {e}")
+        
+        # 3. HEURISTIC FALLBACK (DIAS Robustness)
+        # If market load failed or no match found, try common Binance patterns
+        s_up = symbol.upper()
+        if s_up.endswith('USDC') and '/' not in s_up:
+            return f"{s_up[:-4]}/USDC:USDC"
+        if s_up.endswith('USDT') and '/' not in s_up:
+            # Special case for 1000PEPE and other common prefix-based symbols
+            return f"{s_up[:-4]}/USDT:USDT"
+            
         return symbol
+
+    async def get_market_id(self, symbol: str) -> str:
+        """
+        Translates CCXT standard (1000PEPE/USDC:USDC) to Binance ID (1000PEPEUSDC).
+        Used for Native driver and WS subscriptions.
+        """
+        if not symbol: return ""
+        try:
+            exchange = await self.get_exchange()
+            if not exchange.markets:
+                await exchange.load_markets()
+            
+            # 1. Direct lookup if it's already a standard symbol in our markets
+            if symbol in exchange.markets:
+                return exchange.markets[symbol]['id']
+            
+            # 2. Heuristic fallback (DIAS Robustness)
+            clean = symbol.replace('/', '').replace(':USDC', '').replace(':USDT', '')
+            return clean.upper()
+        except Exception as e:
+            logger.warning(f"[EXCHANGE] get_market_id failed for {symbol}: {e}")
+            return symbol.replace('/', '').replace(':USDC', '').replace(':USDT', '').upper()
 
     async def fetch_orders_by_symbol(self, symbol: str, since: Optional[int] = None, limit: int = 100) -> List[Dict[str, Any]]:
         await self._rate_limit()
@@ -226,6 +302,18 @@ class ExchangeManager:
     async def create_order(self, symbol: str, order_type: str, side: str, amount: str, price: str = None, params: Dict[str, Any] = None) -> Dict[str, Any]:
         norm_sym = await self.normalize_symbol(symbol)
         exchange = await self.get_exchange()
-        return await exchange.create_order(norm_sym, order_type, side, float(amount), float(price) if price else None, params)
+        return await exchange.create_order(norm_sym, order_type, side, float(amount), float(price) if price else None, params or {})
+
+    async def close(self):
+        """Standardized cleanup for CCXT instances and sessions (V5.9.23)."""
+        if self._exchange:
+            await self._exchange.close()
+            logger.info("[EXCHANGE] Async CCXT session closed.")
+            self._exchange = None
+            
+        if self._pro_exchange:
+            await self._pro_exchange.close()
+            logger.info("[EXCHANGE] Pro (WebSocket) CCXT session closed.")
+            self._pro_exchange = None
 
 exchange_manager = ExchangeManager()

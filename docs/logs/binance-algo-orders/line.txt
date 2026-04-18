@@ -1,0 +1,9 @@
+﻿
+  frontend\components\actions\ucoe-action-form.tsx:229:                                <div className="p-4 rounded-2xl 
+bg-white dark:bg-gray-800 border border-gray-100 dark:border-gray-700 shadow-sm text-center space-y-2">
+> frontend\components\actions\ucoe-action-form.tsx:230:                                   <p className="text-[9px] 
+font-black text-gray-400 uppercase tracking-widest leading-none">Algo Ops</p>
+  frontend\components\actions\ucoe-action-form.tsx:231:                                   <p className="text-lg 
+font-black text-emerald-600 leading-none">{activePreview.algo_units.toLocaleString()}</p>
+
+

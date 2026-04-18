@@ -55,6 +55,10 @@ class AdaptiveOTOScalingAction(BaseAction):
             pipeline_id = params.get("pipeline_id")
             
             from app.db.database import get_session_direct, BotPipelineProcess
+            
+            # Ensure symbol is normalized to CCXT standard for consistent event routing
+            symbol = await exchange_manager.normalize_symbol(symbol)
+            
             with get_session_direct() as session:
                 active_chase = session.query(BotPipelineProcess).filter(
                     BotPipelineProcess.symbol == symbol,
@@ -69,6 +73,19 @@ class AdaptiveOTOScalingAction(BaseAction):
                 # Apply Precision
                 qty_str = await exchange_manager.amount_to_precision(symbol, float(qty))
                 price_str = await exchange_manager.price_to_precision(symbol, float(current_price))
+
+                # V5.9.1: Robustness check for Binance Min Notional ($5.0)
+                # If rounding down dropped the notional below $5, we try to nudge it UP
+                # by adding a small amount to the raw qty and re-applying precision.
+                final_notional = float(qty_str) * float(price_str)
+                if final_notional < 5.0 and not params.get('reduceOnly'):
+                    logger.warning(f"[AdaptiveOTO] Notional {final_notional} too low (<$5). Nudging qty UP.")
+                    # Try raw qty + 5% or at least one unit
+                    raw_qty = float(qty) * 1.02 
+                    qty_str = await exchange_manager.amount_to_precision(symbol, raw_qty)
+                    # Re-check
+                    final_notional = float(qty_str) * float(price_str)
+                    logger.info(f"[AdaptiveOTO] Nudged Notional: {final_notional}")
 
                 logger.debug(f"[AdaptiveOTO] Precision strings: qty_str={qty_str}, price_str={price_str}")
 
@@ -107,6 +124,7 @@ class AdaptiveOTOScalingAction(BaseAction):
                         last_order_price=float(price_str),
                         retry_count=1 if initial_rejection else 0, # Start count if we already failed once
                         status="CHASING",
+                        sub_status="WAITING_FILL" if not initial_rejection else "RECOVERING",
                         custom_cooldown=params.get("cooldown"),
                         custom_threshold=params.get("threshold")
                     )
@@ -137,11 +155,11 @@ class AdaptiveOTOScalingAction(BaseAction):
                         target_price = current_price - float(tick_size) if side == "buy" else current_price + float(tick_size)
                         
                         logger.info(f"[AdaptiveOTO] Triggering immediate recovery retry at {target_price}")
-                        await self._execute_order_replacement(process, target_price, session, reason="Initial Post-Only Recovery")
+                        await AdaptiveOTOScalingAction._execute_order_replacement(process, target_price, session, reason="Initial Post-Only Recovery")
 
-                    # 4. Subscribe ONLY after everything else succeeded
+                    # Suscribir stream de alta frecuencia
                     from app.core.stream_service import stream_manager
-                    stream_manager.subscribe(symbol)
+                    await stream_manager.subscribe(symbol)
                     
                     return {"success": True, "action": "ADAPTIVE_OTO", "process_id": process.id}
                 except Exception as db_error:
@@ -160,7 +178,8 @@ class AdaptiveOTOScalingAction(BaseAction):
             logger.error(f"[AdaptiveOTO] Exception: {tb}")
             return {"success": False, "error": str(e)}
 
-    async def handle_tick(self, process, current_price: float, session):
+    @staticmethod
+    async def handle_tick(process, current_price: float, session):
         """Called every millisecond by WS Stream. Fast chase execution."""
         from .chase_manager import ChaseDecisionEngine
         
@@ -174,26 +193,49 @@ class AdaptiveOTOScalingAction(BaseAction):
             return
 
         logger.info(f"[CHASE] Throttling passed. Updating order for {process.symbol} at {current_price}")
-        await self._execute_order_replacement(process, current_price, session, reason="Price Chase")
+        process.sub_status = "CHASING"
+        session.commit()
+        await AdaptiveOTOScalingAction._execute_order_replacement(process, current_price, session, reason="Price Chase")
 
-    async def handle_order_event(self, process, order_data: Dict[str, Any], session):
-        """Processes live WS order updates (FILLED, CANCELED) for OTO logic."""
+    @staticmethod
+    async def handle_order_event(process, order_data: Dict[str, Any], session):
+        """Processes live WS order updates (FILLED, CANCELED, EXPIRED) for OTO logic."""
         status = order_data.get('status', '').lower()
         symbol = process.symbol
-        
+
         if status == 'closed':
-            await self.handle_fill(process, session)
-        elif status in ['canceled', 'rejected', 'expired']:
-            # Check if it was a Post-Only rejection (Binance error -2021)
-            # CCXT info or text might contain 'Post-Only' or 'immediately match'
+            await AdaptiveOTOScalingAction.handle_fill(process, session)
+
+        elif status == 'expired':
+            # GTX (Post-Only) order was auto-expired by Binance when the price crossed
+            # our level. This is NOT a user cancellation — we must chase and re-place.
+            logger.info(f"[CHASE] GTX order expired for {symbol}. Re-placing at latest tick price.")
+            from app.db.database import BotSignal
+            import json
+            signal = BotSignal(
+                symbol=symbol,
+                rule_triggered="GTX_EXPIRED",
+                action_taken="RETRY_GTX_EXPIRE",
+                params_snapshot=json.dumps({"last_tick": process.last_tick_price}),
+                success=True
+            )
+            session.add(signal)
+            session.commit()
+            # Re-place immediately at the last known market price
+            await AdaptiveOTOScalingAction._execute_order_replacement(
+                process, process.last_tick_price or 0.0, session, reason="GTX Expired - Retry"
+            )
+
+        elif status in ['canceled', 'rejected']:
+            # Check if it was a Post-Only creation-time rejection (Binance error -2021)
             info = order_data.get('info', {})
             error_code = info.get('code') or info.get('ec')
-            
+
             is_post_only_reject = False
             if error_code in [-2021, "-2021"]:
                 is_post_only_reject = True
-            
-            # If not direct code, check message
+
+            # Also check message text
             msg = str(info.get('msg', '')).lower()
             if "post-only" in msg or "immediately match" in msg:
                 is_post_only_reject = True
@@ -201,8 +243,7 @@ class AdaptiveOTOScalingAction(BaseAction):
             if is_post_only_reject:
                 if process.retry_count < 10:
                     process.retry_count += 1
-                    
-                    # Log Signal for this specific retry
+
                     from app.db.database import BotSignal
                     import json
                     signal = BotSignal(
@@ -213,35 +254,41 @@ class AdaptiveOTOScalingAction(BaseAction):
                         success=True
                     )
                     session.add(signal)
+                    process.sub_status = "RECOVERING"
                     session.commit()
-                    
-                    # Calculate 1-tick offset from current market price (last_tick_price)
-                    # We need the tick size
+
                     exchange_ccxt = await exchange_manager.get_exchange()
                     await exchange_ccxt.load_markets()
                     market = exchange_ccxt.market(symbol)
                     tick_size = market['precision']['price']
+
+                    # V5.9.3: Accurate Maker Pricing (ask - 1 tick for long)
+                    # This ensures the most competitive bid while staying Maker
+                    ticker = await exchange_manager.fetch_ticker(symbol)
+                    ask = ticker.get('ask')
+                    bid = ticker.get('bid')
                     
-                    # Price offset: 1 tick away
-                    # If BUY: move down to avoid crossing. If SELL: move up.
-                    current_price = process.last_tick_price or 0.0
                     side = process.side or "buy"
                     
                     if side == "buy":
-                        new_price = current_price - float(tick_size)
+                        # Target ask - 1 tick for maximum competitiveness as Maker
+                        new_price = (ask - float(tick_size)) if ask else (process.last_tick_price - float(tick_size))
                     else:
-                        new_price = current_price + float(tick_size)
-                    
-                    logger.info(f"[CHASE] Post-Only rejected. Retry {process.retry_count}/10 at {new_price}")
-                    await self._execute_order_replacement(process, new_price, session, reason=f"Post-Only Retry {process.retry_count}")
+                        # Target bid + 1 tick for short
+                        new_price = (bid + float(tick_size)) if bid else (process.last_tick_price + float(tick_size))
+
+                    logger.info(f"[CHASE] Post-Only rejected. Retry {process.retry_count}/10 at {new_price} (Maker Target)")
+                    await AdaptiveOTOScalingAction._execute_order_replacement(process, new_price, session, reason=f"Post-Only Retry {process.retry_count}")
                 else:
                     logger.error(f"[CHASE] Max Post-Only retries (10) reached for {symbol}. Aborting.")
-                    await self.handle_abort(process, session)
+                    await AdaptiveOTOScalingAction.handle_abort(process, session)
             else:
-                # Normal cancellation or other error
-                await self.handle_abort(process, session)
+                # Explicit user cancellation or unrecoverable error → abort
+                logger.info(f"[CHASE] Order explicitly canceled for {symbol}. Aborting chase.")
+                await AdaptiveOTOScalingAction.handle_abort(process, session)
 
-    async def _execute_order_replacement(self, process, target_price: float, session, reason: str = "Chase"):
+    @staticmethod
+    async def _execute_order_replacement(process, target_price: float, session, reason: str = "Chase"):
         """Internal helper to swap orders and update DB status."""
         from datetime import datetime
         import json
@@ -284,6 +331,7 @@ class AdaptiveOTOScalingAction(BaseAction):
                 process.last_tick_price = target_price
             
             process.last_order_price = float(price_str)
+            process.sub_status = "WAITING_FILL"
             process.updated_at = datetime.utcnow()
             session.commit()
             
@@ -302,17 +350,31 @@ class AdaptiveOTOScalingAction(BaseAction):
             logger.info(f"[CHASE] Order replaced: {new_order['id']} at {price_str} ({reason})")
 
         except Exception as e:
-            tb = traceback.format_exc()
-            logger.error(f"[_execute_order_replacement] Exception: {tb}")
+            err_msg = str(e)
+            is_post_only = "-5022" in err_msg or "-2021" in err_msg or "Post Only" in err_msg
+            
+            if is_post_only:
+                if process.retry_count < 10:
+                    process.retry_count += 1
+                    process.entry_order_id = "INITIAL_REJECTED"
+                    process.sub_status = "RECOVERING"
+                    logger.warning(f"[_execute_order_replacement] Post-Only reject during {reason}. Retry {process.retry_count}/10. State set to RECOVERING.")
+                else:
+                    logger.error(f"[_execute_order_replacement] Max retries reached during {reason}. Aborting.")
+                    await AdaptiveOTOScalingAction.handle_abort(process, session)
+            else:
+                logger.error(f"[_execute_order_replacement] Unexpected failure: {err_msg}")
+
+            session.commit()
             
             # Log failure Signal
             signal = BotSignal(
                 symbol=process.symbol,
                 rule_triggered=reason,
-                action_taken="UPDATE_ORDER_FAILED",
-                params_snapshot=json.dumps({"target_price": target_price}),
+                action_taken="RETRY_REQUIRED" if is_post_only else "UPDATE_ORDER_FAILED",
+                params_snapshot=json.dumps({"target_price": target_price, "retry": process.retry_count}),
                 success=False,
-                error_message=str(e)
+                error_message=err_msg
             )
             session.add(signal)
             session.commit()
@@ -320,7 +382,7 @@ class AdaptiveOTOScalingAction(BaseAction):
     @staticmethod
     async def handle_fill(process, session):
         """Called when entry order is fully closed/filled."""
-        print(f"[CHASE] Entry FILLED for {process.symbol}. Placing TP.")
+        logger.info(f"[CHASE] Entry FILLED for {process.symbol}. Placing TP.")
         try:
             order = await exchange_manager.fetch_order_raw(process.symbol, process.entry_order_id)
             if not order: return
@@ -331,40 +393,120 @@ class AdaptiveOTOScalingAction(BaseAction):
             # Default TP is 1% away for fallback
             tp_price = entry_price * 1.01 if tp_side == "sell" else entry_price * 0.99
             
+            tp_client_id = f"TP_OTO_PID_{process.id}"
+            
+            # --- 1. Validación Activa (Pre-Flight Check) ---
+            open_orders = await exchange_manager.fetch_open_orders(process.symbol)
+            for o in open_orders:
+                o_client_id = o.get('clientOrderId') or o.get('info', {}).get('clientOrderId', '')
+                if o_client_id == tp_client_id:
+                    logger.info(f"[CHASE] Pre-Flight: TP order {tp_client_id} already exists on Exchange. Healing DB state.")
+                    process.status = "COMPLETED"
+                    process.sub_status = "DONE"
+                    from datetime import datetime
+                    process.finished_at = datetime.utcnow()
+                    session.add(process)
+                    session.commit()
+                    return
+
             # Apply Precision
             qty_str = await exchange_manager.amount_to_precision(process.symbol, float(filled_qty))
             price_str = await exchange_manager.price_to_precision(process.symbol, float(tp_price))
             
-            # Place Limit TP
-            await exchange_manager.create_order(
+            # --- 2. Inyección de Sello Idempotente ---
+            # Place Limit TP (reduceOnly to prevent margin exhaustion)
+            tp_order = await exchange_manager.create_order(
                 symbol=process.symbol,
                 side=tp_side,
                 amount=qty_str,
                 price=price_str,
-                order_type="limit"
+                order_type="limit",
+                params={"reduceOnly": True, "newClientOrderId": tp_client_id}
             )
             
             symbol = process.symbol
             
-            # SUCCESS! Self-clean DB state.
-            session.delete(process)
+            # Log TP placement signal
+            import json
+            from app.db.database import BotSignal
+            signal = BotSignal(
+                symbol=symbol,
+                rule_triggered="OTO_TP_PLACEMENT",
+                action_taken="PLACE_LIMIT_TP",
+                params_snapshot=json.dumps({
+                    "entry_price": float(entry_price),
+                    "tp_price": float(tp_price),
+                    "qty": float(filled_qty),
+                    "tp_order_id": str(tp_order.get('id', ''))
+                }),
+                success=True
+            )
+            session.add(signal)
+            
+            # Persist finished state for 60s instead of deleting immediately
+            from datetime import datetime
+            process.status = "COMPLETED"
+            process.sub_status = "DONE"
+            process.finished_at = datetime.utcnow()
+            session.add(process)
             session.commit()
             
             # Tell engine we don't need ticker stream anymore
             from app.core.stream_service import stream_manager
             stream_manager.unsubscribe(symbol)
-            print(f"[CHASE] Completed OTO loop for {symbol}.")
+            logger.info(f"[CHASE] Completed OTO loop for {symbol}. TP at {price_str}, order ID: {tp_order.get('id')}")
             
         except Exception as e:
+            err_msg = str(e)
+            
+            # --- 3. Detección Pasiva (Exchange Firewall Auto-heal) ---
+            if "-2012" in err_msg or "Duplicate clientOrderId" in err_msg:
+                logger.info(f"[CHASE] Ignored duplicate TP placement for {process.symbol} (Idempotency Key Auto-heal).")
+                process.status = "COMPLETED"
+                process.sub_status = "DONE"
+                from datetime import datetime
+                process.finished_at = datetime.utcnow()
+                session.add(process)
+                session.commit()
+                return
+            
             tb = traceback.format_exc()
-            logger.error(f"[CHASE FILL] Exception: {tb}")
-            print(f"[CHASE FILL ERROR] {e}")
+            logger.error(f"[CHASE FILL] Critical error placing TP for {process.symbol}: {err_msg}")
+            
+            # Log TP placement failure signal
+            import json
+            from app.db.database import BotSignal
+            signal = BotSignal(
+                symbol=process.symbol,
+                rule_triggered="OTO_TP_PLACEMENT_FAILED",
+                action_taken="ABORT_TP",
+                params_snapshot=json.dumps({"error": err_msg}),
+                success=False,
+                error_message=err_msg
+            )
+            session.add(signal)
+            
+            # If it fails, we still want to mark the process as DONE or ERROR to stop the ticking loop
+            process.status = "COMPLETED" # Or "ABORTED"
+            process.sub_status = "TP_FAILED"
+            from datetime import datetime
+            process.finished_at = datetime.utcnow()
+            session.add(process)
+            session.commit()
+            
+            logger.warning(f"[CHASE] OTO Loop stopped due to TP failure on {process.symbol}. Manual TP recommended.")
+
     @staticmethod
     async def handle_abort(process, session):
         """Called if entry is explicitly canceled by user."""
         symbol = process.symbol
-        print(f"[CHASE] Entry aborted/canceled for {symbol}.")
-        session.delete(process)
+        logger.info(f"[CHASE] Entry aborted/canceled for {symbol}.")
+        
+        from datetime import datetime
+        process.status = "ABORTED"
+        process.sub_status = "ABORTED"
+        process.finished_at = datetime.utcnow()
+        session.add(process)
         session.commit()
         from app.core.stream_service import stream_manager
         stream_manager.unsubscribe(symbol)
@@ -390,9 +532,4 @@ class RepairChaseAction(BaseAction):
             return {"success": False, "error": str(e)}
 
 
-# Registry for easy parsing
-ACTIONS = {
-    "BUY_MIN_NOTIONAL": BuyMinNotionalAction(),
-    "ADAPTIVE_OTO": AdaptiveOTOScalingAction(),
-    "REPAIR_CHASE": RepairChaseAction()
-}
+# End of Action classes

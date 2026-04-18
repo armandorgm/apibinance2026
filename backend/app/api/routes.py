@@ -38,7 +38,8 @@ from abc import ABC, abstractmethod
 import json
 
 from app.services.pipeline_engine.data_providers import DATA_PROVIDERS
-from app.services.pipeline_engine.actions import ACTIONS
+from app.services.pipeline_engine.registry import ACTIONS
+
 
 router = APIRouter()
 
@@ -296,12 +297,12 @@ async def get_trade_history(symbol: str = "BTC/USDT", logic: str = "fifo", sort_
         
         # Determine strategy from logic string
         strategy = logic.lower()
-        if strategy not in ["fifo", "lifo", "atomic_fifo", "atomic_lifo"]:
+        if strategy not in ["fifo", "lifo", "atomic_fifo", "atomic_lifo", "intent_fifo"]:
             # Fallback for UI if it sends "atomic"
             strategy = "atomic_fifo" if strategy == "atomic" else "fifo"
 
         # Only atomic_fifo reads from DB (pre-saved trades).
-        # Everything else (fifo, lifo, atomic_lifo) is calculated live from fills
+        # Everything else (fifo, lifo, atomic_lifo, intent_fifo) is calculated live from fills
         # so the correct strategy is always applied without DB interference.
         if strategy != "atomic_fifo":
             with get_session_direct() as session:
@@ -541,18 +542,46 @@ async def get_trade_history(symbol: str = "BTC/USDT", logic: str = "fifo", sort_
 
                 legacy_exit_tags: List[str] = []
                 if cond_exit_info is None:
-                    tp_pnl_val, sl_pnl_val, legacy_exit_tags, matched_legacy_orders = apply_legacy_floating_tp_sl(
-                        entry_side,
-                        entry_price,
-                        entry_amount,
-                        open_orders,
-                        matched_order_ids,
-                    )
-                    if matched_legacy_orders and not cond_exit_info:
-                        for l_order in matched_legacy_orders:
-                            if getattr(l_order, "algo_type", None) == "CONDITIONAL" or getattr(l_order, "order_type", None) in ["TAKE_PROFIT_MARKET", "STOP_MARKET", "TRAILING_STOP_MARKET"]:
-                                cond_exit_info = build_conditional_exit_info(l_order)
-                                break
+                    if logic == 'intent_fifo':
+                        # Intent Matcher para órdenes Abiertas Secundarias (Pending Exits)
+                        # Buscar la orden abierta hacia el futuro con la misma cantidad exacta.
+                        # Excluir explícitamente STOP losses por regla de negocio.
+                        intent_match = None
+                        for oo_raw in open_orders:
+                            # Ignorar las propias entradas
+                            if (op['entry_side'] == 'buy' and oo_raw.side.lower() == 'buy') or (op['entry_side'] == 'sell' and oo_raw.side.lower() == 'sell'):
+                                continue
+                            
+                            oo_tags = tags_from_open_order_response(oo_raw)
+                            is_stop = any('STOP' in t.upper() for t in oo_tags)
+                            
+                            # Reglas Intent: Cronológico Adelante, Cifra Exacta, Sin Stop Loss, No consumido previamente
+                            if not is_stop and oo_raw.id not in matched_order_ids and oo_raw.datetime.timestamp() >= entry_ts_ms / 1000:
+                                if abs(oo_raw.amount - entry_amount) < 1e-8:
+                                    intent_match = oo_raw
+                                    matched_order_ids.add(oo_raw.id)
+                                    break
+                                    
+                        if intent_match:
+                            cond_exit_info = build_conditional_exit_info(intent_match)
+                            legacy_exit_tags = tags_from_open_order_response(intent_match)
+                            # También enlazar TP PnL
+                            tpp, slp = compute_tp_sl_from_order(entry_side, entry_price, entry_amount, intent_match)
+                            tp_pnl_val = tpp
+                            
+                    else:
+                        tp_pnl_val, sl_pnl_val, legacy_exit_tags, matched_legacy_orders = apply_legacy_floating_tp_sl(
+                            entry_side,
+                            entry_price,
+                            entry_amount,
+                            open_orders,
+                            matched_order_ids,
+                        )
+                        if matched_legacy_orders and not cond_exit_info:
+                            for l_order in matched_legacy_orders:
+                                if getattr(l_order, "algo_type", None) == "CONDITIONAL" or getattr(l_order, "order_type", None) in ["TAKE_PROFIT_MARKET", "STOP_MARKET", "TRAILING_STOP_MARKET"]:
+                                    cond_exit_info = build_conditional_exit_info(l_order)
+                                    break
 
                 entry_tags = tags_from_binance_order_type(op.get('entry_order_type'))
                 if linked_sorted:
@@ -960,12 +989,21 @@ async def get_balances():
                     }
                     
         return {
-            "spot": {}, # Spot requires a different CCXT instance; empty for now
+            "spot": {}, 
             "futures": filtered_futures,
-            "totals": {k: v['total'] for k, v in filtered_futures.items()}
+            "totals": {k: v['total'] for k, v in filtered_futures.items()},
+            "success": True
         }
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Error fetching balances: {str(e)}")
+        logger.error(f"[BALANCES] Transient error: {e}")
+        # Return empty state instead of 500 to keep UI alive
+        return {
+            "spot": {},
+            "futures": {},
+            "totals": {},
+            "success": False,
+            "error": "Could not fetch balances from Binance. Check connection."
+        }
 
 
 @router.get("/symbols")
@@ -1073,6 +1111,9 @@ async def get_bot_status():
         "last_run": bot_instance.last_run_status
     }
 
+
+class SymbolRequest(BaseModel):
+    symbol: str
 
 @router.post("/bot/start")
 async def start_bot():
@@ -1394,14 +1435,16 @@ class ManualActionRequest(BaseModel):
     amount: Optional[float] = None
     cooldown: Optional[int] = None
     threshold: Optional[float] = None
+    pipeline_id: Optional[int] = None
     
 @router.post("/bot/manual-action")
 async def trigger_manual_action(req: ManualActionRequest):
+    logger.info(f"[MANUAL ACTION] Received: {req}")
     try:
         # Normalize symbol at the very beginning to CCXT standard
         req.symbol = await exchange_manager.normalize_symbol(req.symbol)
         
-        from app.services.pipeline_engine.actions import ACTIONS
+        from app.services.pipeline_engine.registry import ACTIONS
         if req.action_type not in ACTIONS:
             raise HTTPException(status_code=400, detail="Action not found")
             
@@ -1410,6 +1453,32 @@ async def trigger_manual_action(req: ManualActionRequest):
         # Ensure StreamManager is running for WebSocket reactiveness
         from app.core.stream_service import stream_manager
         await stream_manager.start()
+        
+        # Proactive sync to catch fills occurred during downtime/startup
+        await stream_manager.recover_active_subscriptions()
+        
+        # Check if we ALREADY have an active process for this symbol after sync
+        from app.db.database import get_session_direct, BotPipelineProcess
+        with get_session_direct() as session:
+            active = session.query(BotPipelineProcess).filter(
+                BotPipelineProcess.symbol == req.symbol,
+                BotPipelineProcess.status == "CHASING"
+            ).first()
+            if active:
+                return {"success": True, "message": f"Process already active for {req.symbol}", "process_id": active.id}
+            
+            # Check if one was just completed/done (prevents re-triggering just after recovery)
+            # We look for processes completed in the last 30 seconds
+            import datetime
+            recent = session.query(BotPipelineProcess).filter(
+                BotPipelineProcess.symbol == req.symbol,
+                BotPipelineProcess.status == "COMPLETED"
+            ).order_by(BotPipelineProcess.id.desc()).first()
+            
+            if recent and recent.finished_at:
+                delta = datetime.datetime.utcnow() - recent.finished_at
+                if delta.total_seconds() < 30:
+                    return {"success": True, "message": "Process recently completed via recovery", "process_id": recent.id}
         
         # Determine side based on closest open order, fallback to 'buy'
         open_orders = await exchange_manager.fetch_open_orders(req.symbol)
@@ -1440,7 +1509,7 @@ async def trigger_manual_action(req: ManualActionRequest):
         action_params = {
             "side": req.side or side,
             "amount": float(req.amount or trade_amount),
-            "pipeline_id": 0,
+            "pipeline_id": req.pipeline_id or 0,
             "cooldown": req.cooldown,
             "threshold": req.threshold
         }
@@ -1448,7 +1517,10 @@ async def trigger_manual_action(req: ManualActionRequest):
         result = await action.execute(
             symbol=req.symbol,
             params=action_params,
-            context_params={"current_price": current_price}
+            context_params={
+                "current_price": current_price,
+                "pipeline_id": req.pipeline_id or 0
+            }
         )
         
         if result.get("success"):
@@ -1467,11 +1539,27 @@ async def trigger_manual_action(req: ManualActionRequest):
 
 @router.get("/bot/active-pipelines")
 async def get_active_pipelines():
-    """List all currently active pipeline processes (Chases)."""
+    """List all currently active pipeline processes (Chases) and recently finished ones for UI feedback."""
     try:
         from app.db.database import get_session_direct, BotPipelineProcess
+        from datetime import datetime, timedelta
+        
+        from sqlalchemy import text
         with get_session_direct() as session:
-            processes = session.query(BotPipelineProcess).all()
+            # 1. Cleanup very old finished processes (e.g., > 5 minutes) to keep DB clean
+            old_cutoff = datetime.utcnow() - timedelta(minutes=5)
+            session.execute(
+                text(f"DELETE FROM bot_pipeline_processes WHERE finished_at IS NOT NULL AND finished_at < '{old_cutoff.isoformat()}'")
+            )
+            session.commit()
+
+            # 2. Fetch Active + Recently Finished (within last 60 seconds)
+            ui_cutoff = datetime.utcnow() - timedelta(seconds=60)
+            processes = session.query(BotPipelineProcess).filter(
+                (BotPipelineProcess.status == "CHASING") | 
+                (BotPipelineProcess.finished_at > ui_cutoff)
+            ).all()
+
             # Convert to list of dicts for JSON serialization
             return [
                 {
@@ -1479,9 +1567,15 @@ async def get_active_pipelines():
                     "symbol": p.symbol,
                     "pipeline_id": p.pipeline_id,
                     "entry_order_id": p.entry_order_id,
-                    "last_tick_price": p.last_tick_price,
+                    "last_tick_price": exchange_manager.get_price(p.symbol) or p.last_tick_price,
+                    "last_order_price": p.last_order_price,
                     "status": p.status,
-                    "created_at": p.created_at.isoformat() if p.created_at else None
+                    "sub_status": p.sub_status,
+                    "retry_count": p.retry_count,
+                    "side": p.side,
+                    "amount": p.amount,
+                    "created_at": p.created_at.isoformat() if p.created_at else None,
+                    "finished_at": p.finished_at.isoformat() if p.finished_at else None
                 }
                 for p in processes
             ]
@@ -1501,18 +1595,28 @@ async def stop_pipeline_process(process_id: int):
             if not process:
                 raise HTTPException(status_code=404, detail="Process not found")
             
-            # Cancel order on Binance if it exists
-            if process.entry_order_id:
+            # Cancel order on Binance if it exists and is a valid real order ID (numeric)
+            is_real_id = process.entry_order_id and str(process.entry_order_id).isdigit()
+            if is_real_id:
                 try:
                     exchange_ccxt = await exchange_manager.get_exchange()
                     await exchange_ccxt.cancel_order(process.entry_order_id, process.symbol)
                     logger.info(f"[PIPELINES] Manually canceled order {process.entry_order_id} for {process.symbol}")
                 except Exception as e:
                     logger.warning(f"[PIPELINES] Could not cancel order during stop: {e}")
+            else:
+                logger.info(f"[PIPELINES] No active real order to cancel for {process.symbol} (ID: {process.entry_order_id})")
             
             # Cleanup DB
-            session.delete(process)
-            session.commit()
+            try:
+                logger.info(f"[PIPELINES] Attempting to DELETE process {process_id} from DB")
+                session.delete(process)
+                session.commit()
+                logger.info(f"[PIPELINES] Successfully DELETED process {process_id} from DB")
+            except Exception as db_err:
+                logger.error(f"[PIPELINES] DB Error during DELETE of process {process_id}: {db_err}")
+                raise HTTPException(status_code=500, detail=f"Database error during deletion: {db_err}")
+
             return {"status": "success", "message": f"Process {process_id} stopped"}
     except HTTPException:
         raise
@@ -1561,4 +1665,26 @@ async def simulate_chase(req: ChaseSimulationRequest):
     except Exception as e:
         logger.error(f"[CHASE SIM] Error: {e}")
         traceback.print_exc()
+        raise HTTPException(status_code=500, detail=str(e))
+
+@router.post("/watch")
+async def watch_symbol(req: SymbolRequest):
+    """Request the backend to start streaming a symbol for real-time UI preview."""
+    try:
+        from app.core.stream_service import stream_manager
+        from app.core.exchange import exchange_manager
+        
+        # Normalize to CCXT format so the broadcast key matches the lookup key
+        ccxt_symbol = await exchange_manager.normalize_symbol(req.symbol)
+        logger.info(f"[WATCH REQUEST] symbol={req.symbol} normalized={ccxt_symbol}")
+        
+        # Maximize robustness: Lazy-start stream manager if not already running
+        if not stream_manager.is_running:
+            logger.info("[WATCH] Force-starting StreamManager for Live Preview")
+            await stream_manager.start()
+            
+        await stream_manager.subscribe(ccxt_symbol)
+        
+        return {"success": True, "message": f"Watching {ccxt_symbol}", "ccxt_symbol": ccxt_symbol}
+    except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
