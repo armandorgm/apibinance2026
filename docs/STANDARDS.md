@@ -6,7 +6,7 @@ Este documento es la **Fuente de Verdad Maestra** para el desarrollo, documentac
 
 ## 🚀 1. Ciclo de Vida de Ejecución (.temp/)
 Toda tarea compleja debe seguir una trazabilidad obligatoria dentro de la carpeta `.temp/`:
-1. **Fase Inicial**: Generar `PLAN_EJECUCION.md` detallando la hoja de ruta y objetivos.
+1. **Fase Inicial**: Generar `PLAN_EJECUCION.md` detallando la hoja de ruta y objetivos. **CRÍTICO:** Debe incluir obligatoriamente el ID de Conversación o enlace del agente en el encabezado para evitar que agentes en paralelo sobrescriban los planes.
 2. **Fase de Progreso**: Actualizar el archivo con logs de cambios, errores interceptados y ajustes.
 3. **Fase de Cierre**: Registrar el estado final del sistema.
 4. **Soberanía del Usuario**: Al terminar, preguntar si se desea eliminar temporales, ejecutar plan reparador, modificador o restaurador.

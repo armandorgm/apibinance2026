@@ -2,6 +2,7 @@
 
 import { useState } from 'react'
 import { useSyncTrades } from '@/hooks/use-trades'
+import { toast } from 'sonner'
 
 interface SyncButtonProps {
   symbol: string
@@ -15,15 +16,16 @@ export function SyncButton({ symbol, logic, onSyncComplete }: SyncButtonProps) {
 
   const handleSync = async () => {
     setIsSyncing(true)
-    try {
-      const result = await syncMutation.mutateAsync({ symbol, logic })
-      alert(`Sincronización completada:\n${result.message}`)
-      onSyncComplete?.()
-    } catch (error) {
-      alert(`Error al sincronizar: ${error instanceof Error ? error.message : 'Error desconocido'}`)
-    } finally {
-      setIsSyncing(false)
-    }
+    
+    toast.promise(syncMutation.mutateAsync({ symbol, logic }), {
+      loading: 'Sincronizando operaciones con Binance...',
+      success: (result) => {
+        onSyncComplete?.()
+        return `Sincronización completada: ${result.message}`
+      },
+      error: (error) => `Error al sincronizar: ${error instanceof Error ? error.message : 'Error desconocido'}`,
+      finally: () => setIsSyncing(false)
+    })
   }
 
   return (

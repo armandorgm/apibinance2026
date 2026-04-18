@@ -137,8 +137,14 @@ export interface ActivePipeline {
   pipeline_id: number
   entry_order_id: string | null
   last_tick_price: number | null
+  last_order_price: number | null
   status: string
+  sub_status: string
+  retry_count: number
+  side: string
+  amount: number
   created_at: string | null
+  finished_at: string | null
 }
 
 export interface ChaseSimulationRequest {
@@ -430,15 +436,32 @@ export async function createPipeline(payload: Partial<BotPipeline>): Promise<Bot
   return response.json()
 }
 
-export async function triggerManualAction(symbol: string, action_type: string): Promise<{status: string, message: string}> {
+export async function triggerManualAction(
+  symbol: string, 
+  action_type: string,
+  params?: {
+    side?: string,
+    amount?: number,
+    threshold?: number,
+    cooldown?: number,
+    profit_pc?: number
+  }
+): Promise<{status: string, message: string}> {
   const response = await fetch(`${API_BASE_URL}/api/bot/manual-action`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ symbol, action_type }),
+    body: JSON.stringify({ 
+      symbol, 
+      action_type,
+      ...params
+    }),
   })
   if (!response.ok) {
     const err = await response.json().catch(() => ({}));
-    throw new Error(err.detail || 'Error triggering manual action');
+    const message = typeof err.detail === 'string' 
+      ? err.detail 
+      : JSON.stringify(err.detail || err) || 'Error triggering manual action';
+    throw new Error(message);
   }
   return response.json()
 }
@@ -516,3 +539,12 @@ export async function executeUcoeBulkAction(symbol: string, orderIds: string[], 
 }
 
 
+export async function watchSymbol(symbol: string): Promise<any> {
+  const response = await fetch(`${API_BASE_URL}/api/watch`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ symbol }),
+  })
+  if (!response.ok) throw new Error('Error requesting symbol watch')
+  return response.json()
+}

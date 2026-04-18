@@ -4,14 +4,15 @@ description: Procedure to ensure non-breaking changes during implementation.
 
 # /implementation-safety
 
-This workflow must be followed by every AI Agent before proposing and executing a `PLAN_EJECUCION.md`.
+This workflow must be followed by every AI Agent before proposing and **appending** to the cumulative `PLAN_EJECUCION.md`. Every plan section must use the standardized template defined in [AGENTS.md](file:///f:/apibinance2026/AGENTS.md).
 
 ## 🛡️ Safety Checklist
 
-### 1. Impact Analysis (Imports & Exports)
-- **Tool**: `grep_search` or `ripgrep`.
-- **Task**: Identify all files that import the module you are about to change. 
-- **Validation**: If a function signature changes, you MUST update all call sites in the same plan.
+### 1. Impact Analysis (Dependency Mapping)
+- **Tool**: `python scripts/impact_analyzer.py --impact <file>`
+- **Task**: Identify the "blast radius" of the change. 
+- **Validation**: If a module or function signature changes, you MUST use the impact report to identify and update all dependents in the same plan.
+- **API Sync**: If editing `backend/app/api/routes.py`, run `python scripts/impact_analyzer.py --api` to check for frontend call sites.
 
 ### 2. Database Schema Integrity
 - **Constraint**: SQLModel/SQLite does not support complex `ALTER TABLE` easily.

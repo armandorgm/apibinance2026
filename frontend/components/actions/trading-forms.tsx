@@ -1,30 +1,74 @@
 'use client'
 
-import { useState } from 'react'
-import { triggerManualAction } from '@/lib/api'
+import { useEffect, useState } from 'react'
+import { triggerManualAction, watchSymbol } from '@/lib/api'
 import { Zap, ShoppingCart, Loader2, DollarSign, Settings2, ShieldAlert } from 'lucide-react'
+
+import { toast } from 'sonner'
+
+import { useNotifications } from '../notification-provider'
+import { TrendingUp, TrendingDown } from 'lucide-react'
 
 interface ActionFormProps {
   symbol: string
 }
 
-export function ChaseEntryForm({ symbol }: ActionFormProps) {
+export function ChaseEntryForm({ symbol: initialSymbol }: ActionFormProps) {
+  const [symbol, setSymbol] = useState(initialSymbol)
+  const [serverSymbol, setServerSymbol] = useState(initialSymbol) // Normalized symbol from backend
+  const { prices, connectionStatus } = useNotifications()
+  
+  // V5.9.21: Direct dual-key lookup (Failsafe)
+  const getTicker = () => {
+    // Attempt lookup by CCXT server symbol or raw Binance symbol directly
+    return prices[serverSymbol] || prices[symbol] || {}
+  }
+
+  const ticker = getTicker()
+  
+  // V5.9.8: Activar seguimiento con normalización de servidor
+  useEffect(() => {
+    if (symbol) {
+      watchSymbol(symbol)
+        .then(res => {
+          if (res.ccxt_symbol) {
+            setServerSymbol(res.ccxt_symbol)
+            console.log(`[WATCH] Server normalized ${symbol} -> ${res.ccxt_symbol}`)
+          }
+        })
+        .catch(err => console.error("Watch failed:", err))
+    }
+  }, [symbol])
+
   const [side, setSide] = useState<'buy' | 'sell'>('buy')
   const [amount, setAmount] = useState('20')
   const [isLoading, setIsLoading] = useState(false)
-  const [useCustomThreshold, setUseCustomThreshold] = useState(false)
   const [threshold, setThreshold] = useState(0.0005)
+  const [profitPc, setProfitPc] = useState(0.005)
+  const [useV2, setUseV2] = useState(true)
 
   const handleAction = async () => {
-    try {
-      setIsLoading(true)
-      await triggerManualAction(symbol, 'ADAPTIVE_OTO')
-      alert(`Éxito: Chase iniciado en ${symbol}`)
-    } catch (error: any) {
-      alert(`Error: ${error.message}`)
-    } finally {
-      setIsLoading(false)
-    }
+    setIsLoading(true)
+    
+    const actionType = useV2 ? 'ADAPTIVE_OTO_V2' : 'ADAPTIVE_OTO'
+
+    toast.promise(
+      triggerManualAction(symbol, actionType, {
+        side,
+        amount: parseFloat(amount),
+        threshold,
+        profit_pc: actionType === 'ADAPTIVE_OTO_V2' ? profitPc : undefined
+      }),
+      {
+        loading: `Iniciando estrategia ${useV2 ? 'V2 (Native)' : 'V1 (CCXT)'}...`,
+        success: () => `Éxito: Chase ${useV2 ? 'V2' : 'V1'} iniciado en ${symbol}`,
+        error: (error) => {
+          console.error("[CHASE ACTION ERROR]", error)
+          return `Error: ${error.message || 'Error desconocido'}`
+        },
+        finally: () => setIsLoading(false)
+      }
+    )
   }
 
   return (
@@ -43,13 +87,52 @@ export function ChaseEntryForm({ symbol }: ActionFormProps) {
         </div>
       </div>
 
+      {/* Real-time Price Display */}
+      <div className="mb-8 p-6 bg-gray-50 dark:bg-gray-950 border border-gray-100 dark:border-gray-800 rounded-[2rem] flex items-center justify-between">
+        <div className="space-y-1">
+          <label className="text-[10px] font-black uppercase tracking-tighter text-gray-400">Current Price (Mid)</label>
+          <div className="text-2xl font-black text-gray-900 dark:text-white font-mono tracking-tight">
+            {ticker.last ? ticker.last.toFixed(symbol.includes('PEPE') ? 8 : 4) : '---'}
+          </div>
+        </div>
+        <div className="flex gap-4">
+          <div className="text-right">
+            <div className="text-[9px] font-bold text-green-500 uppercase flex items-center justify-end gap-1">
+              <TrendingUp className="w-2 h-2" /> Bid
+            </div>
+            <div className="text-sm font-bold font-mono">{ticker.bid?.toFixed(symbol.includes('PEPE') ? 8 : 4) || '---'}</div>
+          </div>
+          <div className="text-right">
+            <div className="text-[9px] font-bold text-red-500 uppercase flex items-center justify-end gap-1">
+              <TrendingDown className="w-2 h-2" /> Ask
+            </div>
+            <div className="text-sm font-bold font-mono">{ticker.ask?.toFixed(symbol.includes('PEPE') ? 8 : 4) || '---'}</div>
+          </div>
+        </div>
+      </div>
+
       <div className="space-y-8">
+        {/* Symbol Selector inside form for robustness */}
+        <div className="space-y-2">
+            <label className="text-xs font-black uppercase tracking-widest text-gray-400 ml-1">Símbolo Activo</label>
+            <select 
+              value={symbol}
+              onChange={(e) => setSymbol(e.target.value)}
+              className="w-full px-6 py-4 bg-gray-50 dark:bg-gray-950 border border-gray-100 dark:border-gray-800 rounded-3xl font-bold text-gray-900 dark:text-white focus:ring-4 focus:ring-amber-500/10 outline-none transition-all"
+            >
+              <option value="1000PEPEUSDC">1000PEPEUSDC</option>
+              <option value="BTC/USDT">BTC/USDT</option>
+              <option value="ETH/USDT">ETH/USDT</option>
+              <option value="BNB/USDT">BNB/USDT</option>
+            </select>
+        </div>
+
         <div className="grid grid-cols-2 gap-4 p-1.5 bg-gray-50 dark:bg-gray-950 rounded-[1.5rem] border border-gray-100 dark:border-gray-800">
           <button
             onClick={() => setSide('buy')}
             className={`py-4 rounded-2xl font-black text-sm transition-all ${side === 'buy' ? 'bg-green-600 text-white shadow-xl scale-[1.02]' : 'text-gray-400 hover:text-gray-600'}`}
           >
-            LONG POSITON
+            LONG POSITION
           </button>
           <button
             onClick={() => setSide('sell')}
@@ -73,22 +156,44 @@ export function ChaseEntryForm({ symbol }: ActionFormProps) {
             </div>
           </div>
 
-          <div className="space-y-2">
-            <label className="text-xs font-black uppercase tracking-widest text-gray-400 ml-1 flex justify-between">
-              Umbral de Chase %
-              <span className="text-amber-500">{(threshold * 100).toFixed(3)}%</span>
-            </label>
-            <div className="px-6 py-5 bg-gray-50 dark:bg-gray-950 border border-gray-100 dark:border-gray-800 rounded-3xl">
-              <input
-                type="range"
-                min="0.0001"
-                max="0.0050"
-                step="0.0001"
-                value={threshold}
-                onChange={(e) => setThreshold(parseFloat(e.target.value))}
-                className="w-full accent-amber-500"
-              />
+          <div className="space-y-4">
+            <div className="space-y-2">
+              <label className="text-xs font-black uppercase tracking-widest text-gray-400 ml-1 flex justify-between">
+                Umbral de Chase %
+                <span className="text-amber-500">{(threshold * 100).toFixed(3)}%</span>
+              </label>
+              <div className="px-6 py-5 bg-gray-50 dark:bg-gray-950 border border-gray-100 dark:border-gray-800 rounded-3xl">
+                <input
+                  type="range"
+                  min="0.0001"
+                  max="0.0050"
+                  step="0.0001"
+                  value={threshold}
+                  onChange={(e) => setThreshold(parseFloat(e.target.value))}
+                  className="w-full accent-amber-500"
+                />
+              </div>
             </div>
+
+            {useV2 && (
+              <div className="space-y-2 animate-in fade-in slide-in-from-top-2 duration-300">
+                <label className="text-xs font-black uppercase tracking-widest text-indigo-400 ml-1 flex justify-between">
+                  Profit Target % (V2)
+                  <span className="text-indigo-500">{(profitPc * 100).toFixed(1)}%</span>
+                </label>
+                <div className="px-6 py-5 bg-indigo-50/30 dark:bg-indigo-900/10 border border-indigo-100 dark:border-indigo-800 rounded-3xl">
+                  <input
+                    type="range"
+                    min="0.001"
+                    max="0.05"
+                    step="0.001"
+                    value={profitPc}
+                    onChange={(e) => setProfitPc(parseFloat(e.target.value))}
+                    className="w-full accent-indigo-500"
+                  />
+                </div>
+              </div>
+            )}
           </div>
         </div>
 
@@ -99,14 +204,25 @@ export function ChaseEntryForm({ symbol }: ActionFormProps) {
             </p>
         </div>
 
-        <button
-          onClick={handleAction}
-          disabled={isLoading}
-          className="w-full py-6 bg-gray-900 dark:bg-amber-500 hover:bg-black dark:hover:bg-amber-400 text-white dark:text-gray-950 rounded-[1.5rem] font-black text-xl shadow-2xl shadow-amber-500/20 transition-all active:scale-[0.98] disabled:opacity-50 flex items-center justify-center"
-        >
-          {isLoading ? <Loader2 className="w-6 h-6 animate-spin mr-3" /> : <Zap className="w-6 h-6 mr-3 fill-current" />}
-          EJECUTAR ESTRATEGIA CHASE
-        </button>
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+          <button
+            onClick={() => { setUseV2(false); setTimeout(handleAction, 50); }}
+            disabled={isLoading}
+            className="py-5 bg-gray-800 hover:bg-black text-white rounded-2xl font-black text-lg transition-all active:scale-[0.98] disabled:opacity-50 flex items-center justify-center border border-gray-700"
+          >
+            {isLoading && !useV2 ? <Loader2 className="w-5 h-5 animate-spin mr-3" /> : <Zap className="w-5 h-5 mr-3" />}
+            CHASE V1 (CCXT)
+          </button>
+
+          <button
+            onClick={() => { setUseV2(true); setTimeout(handleAction, 50); }}
+            disabled={isLoading}
+            className="py-5 bg-indigo-600 hover:bg-indigo-500 text-white rounded-2xl font-black text-lg shadow-xl shadow-indigo-500/20 transition-all active:scale-[0.98] disabled:opacity-50 flex items-center justify-center"
+          >
+            {isLoading && useV2 ? <Loader2 className="w-5 h-5 animate-spin mr-3" /> : <Zap className="w-5 h-5 mr-3 fill-current" />}
+            CHASE V2 (NATIVE)
+          </button>
+        </div>
       </div>
     </div>
   )
@@ -116,15 +232,17 @@ export function MarketBuyForm({ symbol }: ActionFormProps) {
   const [isLoading, setIsLoading] = useState(false)
 
   const handleAction = async () => {
-    try {
-      setIsLoading(true)
-      await triggerManualAction(symbol, 'BUY_MIN_NOTIONAL')
-      alert(`Operación Exitosa: Market Buy de $5 en ${symbol}`)
-    } catch (error: any) {
-      alert(`Error: ${error.message}`)
-    } finally {
-      setIsLoading(false)
-    }
+    setIsLoading(true)
+    
+    toast.promise(
+      triggerManualAction(symbol, 'BUY_MIN_NOTIONAL'),
+      {
+        loading: 'Ejecutando Market Buy ($5)...',
+        success: () => `Operación Exitosa: Market Buy de $5 en ${symbol}`,
+        error: (error) => `Error: ${error.message || 'Error desconocido'}`,
+        finally: () => setIsLoading(false)
+      }
+    )
   }
 
   return (

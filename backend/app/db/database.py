@@ -196,9 +196,14 @@ class BotPipelineProcess(SQLModel, table=True):
     # Status of the session: 'CHASING', 'WAITING_FILL', 'COMPLETED', 'ABORTED'
     status: str = Field(default="CHASING")
     
+    # Granular tracking for UI infographic
+    sub_status: str = Field(default="INIT") # INIT, CHASING, WAITING_FILL, PLACING_TP, DONE, ABORTED
+    finished_at: Optional[datetime] = None
+    
     # Custom chasing parameters (Overriding defaults)
     custom_cooldown: Optional[int] = None
     custom_threshold: Optional[float] = None
+    custom_profit_pc: Optional[float] = None
     retry_count: int = Field(default=0)
     
     created_at: datetime = Field(default_factory=datetime.utcnow)

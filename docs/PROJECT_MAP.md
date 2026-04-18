@@ -1,7 +1,9 @@
 # PROJECT MAP - Binance Futures Tracker
 
 ## Visión General
-Rastreador de operaciones para Binance Futures con soporte para emparejamiento FIFO/LIFO, cálculo de PnL neto y visualización en tiempo real.
+Rastreador de operaciones para Binance Futures con soporte para emparejamiento FIFO/LIFO, cálculo de PnL neto y visualización en tiempo real. 
+> [!IMPORTANT]
+> Ver [PRODUCT_OWNER_VISION.md](file:///f:/apibinance2026/docs/PRODUCT_OWNER_VISION.md) para el manifiesto estratégico oficial.
 
 ## Stack Tecnológico
 - **Backend**: Python 3.10+, FastAPI, SQLModel (SQLite), CCXT.
@@ -19,8 +21,12 @@ Rastreador de operaciones para Binance Futures con soporte para emparejamiento F
   - `tradingStrategy.ts`: Definición de reglas funcionales (Array de evaluadores).
   - `ruleEngine.ts`: Motor funcional de evaluación de estrategias.
 - `docs/incidents/`: Registro de incidentes y resoluciones.
+- `scripts/impact_analyzer.py`: Motor central de DIAS (Dependency & Impact Analysis System) para prevenir regresiones.
+- **Intent Matcher**: Algoritmo de emparejamiento 1:1 basado en intención (descartando SL).
+- `frontend/app/intent-timeline/`: Vista cinemática independiente con estética Neón.
 - `docs/MATCHING_SYSTEM.md`: Arquitectura detallada del sistema de emparejamiento (Strategy pattern, FIFO/LIFO/Atomic).
 - `docs/GLOSSARY.md`: Glosario oficial de términos y nomenclatura del proyecto (Posición, Orden B/C, Fill).
+- `docs/BINANCE_CHANGELOG.md`: Registro histórico de la API de Binance optimizado para agentes de IA.
 - `frontend/app/exchange-logs/`: Monitor interactivo central para reportes y respuestas CCXT.
 
 ## Flujos Críticos de Datos
@@ -33,7 +39,7 @@ Rastreador de operaciones para Binance Futures con soporte para emparejamiento F
 ## Responsabilidades de Módulos (Actualizado 2026-04-01)
 - `backend/app/services/history_formatter.py`: Abstrae el formateo y acomodo de resultados (Patrón Strategy) bajo los principios Open-Closed y SRP para ordenar la visualización combinada de trades cerradas y flotantes.
 - `frontend/lib/utils.ts`: Gestiona el formateo dinámico de precios, cantidades y porcentajes para activos de cualquier valor nominal.
-- `backend/app/services/tracker_logic.py`: Implementa el Patrón Strategy (FIFO, LIFO, ATOMIC) referenciado al cruce de trades puros.
+- `backend/app/services/tracker_logic.py`: Implementa el Patrón Strategy (FIFO, LIFO, ATOMIC, INTENT, NETTING) referenciado al cruce de trades puros.
 - `backend/app/api/routes.py`: Endpoints para sync de trades y gestión de balances. Implementa la **Hidratación Dinámica de Fills** para el historial (atomic_fifo) asegurando transparencia total al expandir filas en el frontend.
 - `frontend/components/trade-table.tsx`: Tabla interactiva con soporte para **filas expandibles** y sub-tablas de ejecuciones detalladas (lucide-react).
 - `frontend/components/open-trades-table.tsx`: Visualizador premium de **órdenes pendientes** (Limit, Conditional, Algo) filtradas del historial activo para mayor visibilidad estratégica.
@@ -43,6 +49,7 @@ Rastreador de operaciones para Binance Futures con soporte para emparejamiento F
 - `frontend/components/balance-widget.tsx`: Dashboard Balance View con pestañas e interfaz unificada.
 - `backend/app/services/unified_counter_order_service.py`: Motor estratégico bi-direccional (UCOE V5.9) que genera contrapartidas (Long/Short) basadas en el historial de Binance, integrando visibilidad de **Algo Orders (TP/SL/Trailing)** y gestionando automáticamente el flag `reduceOnly` utilizando unidades estándar de contratos (Factor 1).
 - `backend/app/api/routes.py`: Incorpora los endpoints descriptivos `/api/unified-counter-order-engine/*` para la orquestación del UCOE.
+- `scripts/impact_analyzer.py`: Herramienta de seguridad implementada en 2026-04-16. Escanea el proyecto, construye grafos de dependencia y mapea impactos entre backend y frontend para asegurar cambios libres de errores.
 
 ## AI Agent Configuration (Updated 2026-04-04)
 
