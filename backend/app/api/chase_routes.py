@@ -49,17 +49,17 @@ async def stop_chase(req: ChaseStopRequest):
         raise HTTPException(status_code=500, detail=str(e))
 
 @router.get("/status", response_model=Dict[str, Any])
-def get_chase_status(symbol: Optional[str] = None, session: Session = Depends(get_session)):
+def get_chase_status(symbol: Optional[str] = None):
     """Gets the status of active chase processes."""
     try:
-        query = session.query(BotPipelineProcess).filter(
-            BotPipelineProcess.originator == "CHASE_V2_SERVICE",
-            BotPipelineProcess.status == "CHASING"
-        )
-        if symbol:
-            query = query.filter(BotPipelineProcess.symbol == symbol)
-            
-        processes = query.all()
+        with get_session() as session:
+            query = session.query(BotPipelineProcess).filter(
+                BotPipelineProcess.status == "CHASING"
+            )
+            if symbol:
+                query = query.filter(BotPipelineProcess.symbol == symbol)
+                
+            processes = query.all()
         
         result = []
         for p in processes:
