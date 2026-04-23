@@ -490,6 +490,55 @@ export async function simulateChase(req: ChaseSimulationRequest): Promise<ChaseS
   return response.json()
 }
 
+// --- CHASE V2 API ---
+export interface ChaseV2Status {
+  id: number
+  symbol: string
+  side: string
+  amount: number
+  entry_order_id: string | null
+  sub_status: string
+  last_order_price: number | null
+  last_tick_price: number | null
+  created_at: string | null
+  updated_at: string | null
+}
+
+export async function startChaseV2(symbol: string, side: string, amount: number, profitPc: number = 0.005): Promise<any> {
+  const response = await fetch(`${API_BASE_URL}/api/chase/init`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ symbol, side, amount, profit_pc: profitPc, pipeline_id: 0 }),
+  })
+  if (!response.ok) {
+    const err = await response.json().catch(() => ({ detail: response.statusText }))
+    throw new Error(err.detail || 'Error starting Chase V2')
+  }
+  return response.json()
+}
+
+export async function stopChaseV2(processId: number): Promise<any> {
+  const response = await fetch(`${API_BASE_URL}/api/chase/stop`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ process_id: processId }),
+  })
+  if (!response.ok) {
+    const err = await response.json().catch(() => ({ detail: response.statusText }))
+    throw new Error(err.detail || 'Error stopping Chase V2')
+  }
+  return response.json()
+}
+
+export async function fetchChaseV2Status(symbol?: string): Promise<{ success: boolean, active_processes: ChaseV2Status[] }> {
+  const url = new URL(`${API_BASE_URL}/api/chase/status`)
+  if (symbol) url.searchParams.append('symbol', symbol)
+  const response = await fetch(url.toString())
+  if (!response.ok) throw new Error('Error fetching Chase V2 status')
+  return response.json()
+}
+
+
 export async function fetchUcoeCandidates(symbol: string, filterMode: string = '7d', orphansOnly: boolean = false): Promise<UcoeCandidate[]> {
   const res = await fetch(`${API_BASE_URL}/api/unified-counter-order-engine/candidates?symbol=${encodeURIComponent(symbol)}&filter_mode=${filterMode}&orphans_only=${orphansOnly}`)
   if (!res.ok) throw new Error('Failed to fetch UCOE candidates')

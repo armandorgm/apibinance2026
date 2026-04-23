@@ -5,8 +5,13 @@ import { useBotStatus, useBotLogs, useBotControl } from '@/hooks/use-trades'
 import { format } from 'date-fns'
 import { clsx } from 'clsx'
 import { ActivePipelines } from './active-pipelines'
+import { ChaseV2Widget } from './chase-v2-widget'
 
-export function BotMonitor() {
+interface BotMonitorProps {
+  symbol: string
+}
+
+export function BotMonitor({ symbol }: BotMonitorProps) {
   const { data: status, isLoading: isStatusLoading } = useBotStatus()
   const { data: logs, isLoading: isLogsLoading } = useBotLogs(10)
   const { start, stop } = useBotControl()
@@ -128,7 +133,10 @@ export function BotMonitor() {
 
       {/* Active Pipelines Monitor */}
       <div className="lg:col-span-3">
-        <ActivePipelines />
+        <ChaseV2Widget symbol={symbol} />
+        <div className="mt-6">
+          <ActivePipelines />
+        </div>
       </div>
     </div>
   )

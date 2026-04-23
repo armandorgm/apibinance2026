@@ -35,6 +35,9 @@ app.add_middleware(
 # Include API routes
 app.include_router(router, prefix="/api")
 
+from app.api.chase_routes import router as chase_router
+app.include_router(chase_router, prefix="/api/chase", tags=["chase"])
+
 # WebSocket Notifications Endpoint
 from fastapi import WebSocket, WebSocketDisconnect
 from app.services.notification_service import notification_manager

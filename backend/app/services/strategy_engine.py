@@ -94,9 +94,16 @@ class PipelineEngine:
             from .pipeline_engine.native_actions import NativeOTOScalingAction
             from app.core.exchange import exchange_manager
 
+            from app.services.chase_v2_service import chase_v2_service
+            
             for process in active_processes:
                 # Optimized Handler Routing (SOLID Heuristic)
-                handler = NativeOTOScalingAction if "NATIVE" in (process.sub_status or "") else AdaptiveOTOScalingAction
+                if process.originator == "CHASE_V2_SERVICE":
+                    handler = chase_v2_service
+                elif "NATIVE" in (process.sub_status or ""):
+                    handler = NativeOTOScalingAction
+                else:
+                    handler = AdaptiveOTOScalingAction
                 
                 # Update tick price for logic and in-memory registry
                 exchange_manager.update_price(symbol, current_price)
@@ -151,9 +158,15 @@ class PipelineEngine:
 
             from .pipeline_engine.actions import AdaptiveOTOScalingAction
             from .pipeline_engine.native_actions import NativeOTOScalingAction
+            from app.services.chase_v2_service import chase_v2_service
             
             # Optimized Handler Routing
-            handler = NativeOTOScalingAction if "NATIVE" in (process.sub_status or "") else AdaptiveOTOScalingAction
+            if process.originator == "CHASE_V2_SERVICE":
+                handler = chase_v2_service
+            elif "NATIVE" in (process.sub_status or ""):
+                handler = NativeOTOScalingAction
+            else:
+                handler = AdaptiveOTOScalingAction
             
             # Delegate to unified handler
             await handler.handle_order_event(process, order_data, session)
