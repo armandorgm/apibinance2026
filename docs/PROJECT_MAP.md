@@ -37,8 +37,8 @@ Rastreador de operaciones para Binance Futures con soporte para emparejamiento F
 5. **Ejecución Autónoma**: `BotConfig` (DB) -> `BotService` (Background Task) -> CCXT -> Binance API -> `BotSignal` (DB).
 
 ## Responsabilidades de Módulos (Actualizado 2026-04-01)
-- `backend/app/services/history_formatter.py`: Abstrae el formateo y acomodo de resultados (Patrón Strategy) bajo los principios Open-Closed y SRP para ordenar la visualización combinada de trades cerradas y flotantes.
-- `frontend/lib/utils.ts`: Gestiona el formateo dinámico de precios, cantidades y porcentajes para activos de cualquier valor nominal.
+- `backend/app/core/exchange.py`: Registro para data de mercado y manipulación de precios. Incluye `get_tick_size` para obtener precisión dinámica de Binance/CCXT.
+- `backend/app/services/pipeline_engine/native_actions.py`: Contiene la lógica de ejecución en modo NATIVE. Implementa el algoritmo Front-Running Maker (Bid+1/Ask-1) y gestión de errores Post-Only (-5022).
 - `backend/app/services/tracker_logic.py`: Implementa el Patrón Strategy (FIFO, LIFO, ATOMIC, INTENT, NETTING) referenciado al cruce de trades puros.
 - `backend/app/api/routes.py`: Endpoints para sync de trades y gestión de balances. Implementa la **Hidratación Dinámica de Fills** para el historial (atomic_fifo) asegurando transparencia total al expandir filas en el frontend.
 - `frontend/components/trade-table.tsx`: Tabla interactiva con soporte para **filas expandibles** y sub-tablas de ejecuciones detalladas (lucide-react).

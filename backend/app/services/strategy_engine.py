@@ -89,7 +89,8 @@ class PipelineEngine:
                 stream_manager.unsubscribe(symbol)
                 return
 
-            from .pipeline_engine.actions import ACTIONS, AdaptiveOTOScalingAction
+            from .pipeline_engine.registry import ACTIONS
+            from .pipeline_engine.actions import AdaptiveOTOScalingAction
             from .pipeline_engine.native_actions import NativeOTOScalingAction
             from app.core.exchange import exchange_manager
 

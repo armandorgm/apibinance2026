@@ -282,11 +282,61 @@ class ExchangeManager:
         exchange = await self.get_exchange()
         return await exchange.fetch_ticker(norm_sym)
 
+    async def get_tick_size(self, symbol: str) -> float:
+        """Returns the minimum price increment (tickSize) for a symbol."""
+        norm_sym = await self.normalize_symbol(symbol)
+        exchange = await self.get_exchange()
+        await exchange.load_markets()
+        market = exchange.markets.get(norm_sym, {})
+        # CCXT Binance Future format usually stores the tickSize directly in precision
+        return market.get('precision', {}).get('price', 0.0001)
+
     async def price_to_precision(self, symbol: str, price: float) -> str:
         norm_sym = await self.normalize_symbol(symbol)
         exchange = await self.get_exchange()
         await exchange.load_markets()
         return exchange.price_to_precision(norm_sym, price)
+
+    async def get_safe_min_notional_qty(self, symbol: str, price: float) -> float:
+        """
+        Calcula la cantidad exacta mínima requerida para superar el MIN_NOTIONAL dinámico del símbolo,
+        ajustada matemáticamente al stepSize y respetando el minQty.
+        """
+        norm_sym = await self.normalize_symbol(symbol)
+        exchange = await self.get_exchange()
+        await exchange.load_markets()
+        market = exchange.markets.get(norm_sym, {})
+        
+        # Extraer límites de mercado de CCXT (Manejo robusto de diccionarios)
+        precision_info = market.get('precision', {})
+        limits_info = market.get('limits', {})
+        amount_limits = limits_info.get('amount', {})
+        cost_limits = limits_info.get('cost', {})
+        
+        # En Binance Futures via CCXT, 'precision'['amount'] suele contener el stepSize en formato numérico (ej. 0.001)
+        step_size = float(precision_info.get('amount', 0.001))
+        lot_size_min_qty = float(amount_limits.get('min', step_size))
+        
+        # Obtener el MIN_NOTIONAL dinámico, si no existe asume 5.0 por seguridad estándar
+        min_notional = float(cost_limits.get('min', 5.0))
+        
+        # Aplicamos el buffer de seguridad (1.001) sobre el límite de costo
+        safe_min_notional = min_notional * 1.001
+        
+        # 1. Calculamos la cantidad cruda necesaria usando el notional seguro
+        raw_qty = safe_min_notional / price
+        
+        # 2. Ajustamos al stepSize (la parte algorítmica crítica propuesta por el usuario)
+        remainder = raw_qty % step_size
+        if remainder > 0:
+            min_qty = raw_qty - remainder + step_size
+        else:
+            min_qty = raw_qty
+            
+        # 3. Validamos contra el minQty del LOT_SIZE
+        final_qty = max(min_qty, lot_size_min_qty)
+        
+        return final_qty
 
     async def amount_to_precision(self, symbol: str, amount: float) -> str:
         norm_sym = await self.normalize_symbol(symbol)
