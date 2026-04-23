@@ -53,20 +53,11 @@ class ChaseDecisionEngine:
             # logger.debug(f"[CHASE] Price move too small for {process.symbol} ({price_diff_percent:.5%})")
             return False
             
-        # 3. Directional Logic (Smart Chasing)
-        # If we are BUYING (Long), we only want to move the order UP if the price is escaping up.
-        # If we are SELLING (Short), we only want to move the order DOWN if the price is escaping down.
-        side = (process.side or "buy").lower()
+        # 3. Aggressive Maker Pursuit (No Directional Restriction)
+        # We REMOVED the directional lock (Chasing up/down strictly).
+        # For Post-Only orders to survive highly volatile markets, they must track the 
+        # order book in BOTH directions. If a BUY price drops, we must drop our Bid 
+        # alongside it. Otherwise, the dropping Ask will cross our stale Bid, 
+        # triggering a -5022 Post-Only rejection.
         
-        if side == "buy":
-            # Chasing up: move only if the price is higher than our benchmark
-            if current_price < process.last_tick_price:
-                # logger.debug(f"[CHASE] Price moved DOWN for BUY order on {process.symbol}. Skipping move.")
-                return False
-        else:
-            # Chasing down: move only if the price is lower than our benchmark
-            if current_price > process.last_tick_price:
-                # logger.debug(f"[CHASE] Price moved UP for SELL order on {process.symbol}. Skipping move.")
-                return False
-                
         return True

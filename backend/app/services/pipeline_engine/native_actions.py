@@ -64,12 +64,14 @@ class NativeOTOScalingAction(BaseAction):
 
                 qty = amount / price
                 price_str = await exchange_manager.price_to_precision(symbol, price)
-                qty_str = await exchange_manager.amount_to_precision(symbol, qty)
                 
-                # Minimum Notional Hardening
-                final_notional = float(qty_str) * float(price_str)
-                if final_notional < 5.0:
-                    qty_str = await exchange_manager.amount_to_precision(symbol, qty * 1.02)
+                # Minimum Notional Hardening: Cálculo algorítmico seguro dinámico
+                # Obtenemos la cantidad mínima requerida para este símbolo
+                min_safe_qty = await exchange_manager.get_safe_min_notional_qty(symbol, price)
+                
+                # Nos aseguramos de que la cantidad a operar nunca sea menor al mínimo exigido
+                final_qty = max(qty, min_safe_qty)
+                qty_str = await exchange_manager.amount_to_precision(symbol, final_qty)
                 
                 native_params = {
                     "timeInForce": "GTX", # Post-Only Mandatory
@@ -143,8 +145,30 @@ class NativeOTOScalingAction(BaseAction):
 
             market_id = await exchange_manager.get_market_id(process.symbol)
             
-            # Formatear precisiones
-            price_str = await exchange_manager.price_to_precision(process.symbol, current_price)
+            # --- Front-Running Maker Pricing Logic ---
+            ticker = exchange_manager.get_ticker(process.symbol)
+            if not ticker:
+                logger.warning(f"[CHASE V2] No ticker data for {process.symbol}, skipping tick.")
+                return
+                
+            bid = ticker.get("bid", current_price)
+            ask = ticker.get("ask", current_price)
+            tick_size = await exchange_manager.get_tick_size(process.symbol)
+            
+            side = (process.side or "buy").lower()
+            if side == "buy":
+                # BUY: Bid + 1 tick if (Bid + 1 tick) < Ask, else fallback to Bid
+                target_price = bid + tick_size
+                if target_price >= ask:
+                    target_price = bid
+            else:
+                # SELL: Ask - 1 tick if (Ask - 1 tick) > Bid, else fallback to Ask
+                target_price = ask - tick_size
+                if target_price <= bid:
+                    target_price = ask
+                    
+            # --- Formatear precisiones ---
+            price_str = await exchange_manager.price_to_precision(process.symbol, target_price)
             qty_str = await exchange_manager.amount_to_precision(process.symbol, process.amount)
             
             res = await binance_native.modify_limit_order(
@@ -156,16 +180,23 @@ class NativeOTOScalingAction(BaseAction):
             )
             
             if res.get("success"):
-                process.last_tick_price = current_price
-                process.last_order_price = current_price
+                process.last_tick_price = target_price
+                process.last_order_price = target_price
                 process.sub_status = "CHASING_NATIVE"
                 session.commit()
             else:
-                error = res.get('error', '')
-                # If PUT fails because order is filled (-2012), trigger handle_fill immediately
-                if "filled" in error.lower() or "-2012" in error:
+                error = str(res.get('error', '')).lower()
+                # 1. Detectar si la orden ya se llenó
+                if "filled" in error or "-2012" in error:
                     logger.info(f"[CHASE V2] Order {process.entry_order_id} filled detected via PUT error. Triggering handle_fill.")
                     await NativeOTOScalingAction.handle_fill(process, session)
+                # 2. Detectar Violación Post-Only (Rechazo del Maker)
+                elif "post-only" in error or "-5022" in error:
+                    logger.warning(f"[CHASE V2] Post-Only constraint failed (-5022). Order rejected/canceled. Forcing RECOVERING state.")
+                    process.sub_status = "RECOVERING"
+                    # Reseteamos el order_id para que el motor sepa que no hay orden viva
+                    process.entry_order_id = "INITIAL_REJECTED" 
+                    session.commit()
                 else:
                     logger.warning(f"[CHASE V2] PUT failed: {error}. Skipping tick.")
                 
@@ -202,7 +233,7 @@ class NativeOTOScalingAction(BaseAction):
             
             # Use Native params with reduceOnly
             native_params = {
-                "reduceOnly": "true",
+                "reduceOnly": True,
                 "timeInForce": "GTC",
                 "newClientOrderId": f"V2_TP_{int(datetime.utcnow().timestamp())}"
             }
