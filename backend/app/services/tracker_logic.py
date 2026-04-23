@@ -2,22 +2,301 @@
 Core business logic for FIFO trade matching and PnL calculation.
 This is the heart of the system - matches buys and sells using FIFO algorithm.
 """
-from typing import List, Dict, Any, Tuple
-from datetime import datetime
-from app.db.database import Fill, Trade, get_session_direct
-from sqlmodel import select
+from typing import List, Dict, Any, Tuple, Set, Optional
+from app.db.database import Fill, Trade, BasicOrder, ConditionalOrder, get_session_direct
+from sqlmodel import select, Session
 from collections import deque
-from typing import Optional
 
 
-class FIFOTracker:
+from abc import ABC, abstractmethod
+
+class MatchStrategy(ABC):
+    """Base interface for trade matching strategies."""
+    @abstractmethod
+    def match(self, tracker: 'TradeTracker', fills: List[Fill], session: Optional[Session] = None) -> List[Dict[str, Any]]:
+        pass
+
+class AtomicMatchStrategy(MatchStrategy):
     """
-    FIFO (First In First Out) trade tracker.
-    Matches buy and sell fills to calculate individual trade PnL.
+    Matches trades ONLY if they have the exact same amount.
+    Ideal for Binance Buy + Take Profit / Stop Loss orders.
+    """
+    def __init__(self, is_fifo: bool = True):
+        self.is_fifo = is_fifo
+
+    def match(self, tracker: 'TradeTracker', fills: List[Fill], session: Optional[Session] = None) -> List[Dict[str, Any]]:
+        grouped_orders = tracker._group_fills_by_order(fills, session=session)
+        buys = [o for o in grouped_orders if o['side'] == 'buy']
+        sells = [o for o in grouped_orders if o['side'] == 'sell']
+        
+        matched_trades = []
+        used_buys = set() 
+
+        for sell in sells:
+            candidates = []
+            for i, buy in enumerate(buys):
+                if i in used_buys:
+                    continue
+                if not buy.get('can_be_entry', True):
+                    continue
+                if buy['timestamp'] >= sell['timestamp']:
+                    continue
+                if abs(buy['amount'] - sell['amount']) < 1e-8:
+                    candidates.append(i)
+            
+            if not candidates:
+                continue
+                
+            chosen_idx = candidates[0] if self.is_fifo else candidates[-1]
+            buy = buys[chosen_idx]
+            used_buys.add(chosen_idx)
+            
+            pnl_data = tracker.calculate_pnl(
+                entry_price=buy['price'], entry_amount=buy['amount'], entry_fee=buy['fee'],
+                exit_price=sell['price'], exit_amount=sell['amount'], exit_fee=sell['fee'],
+                entry_side='buy'
+            )
+            
+            matched_trades.append(tracker._format_trade_data(buy, sell, pnl_data))
+
+        return matched_trades
+
+class IntentMatchStrategy(MatchStrategy):
+    """
+    Intent-based Matcher (Atomic Forward Matcher).
+    Matches an Entry chronologically forward to an Exit of EXACT amount.
+    Ignores STOP LOSS logic explicitly to map only intended targets (Take Profit, Limits).
+    Consumed exits are fully popped/removed to prevent double spending.
+    """
+    def match(self, tracker: 'TradeTracker', fills: List[Fill], session: Optional[Session] = None) -> List[Dict[str, Any]]:
+        grouped_orders = tracker._group_fills_by_order(fills, session=session)
+        
+        # Filtrar descartando los STOP LOSS por regla de negocio
+        # Solo queremos emparejar INTENCIÓN (TP o Limit)
+        filtered_orders = []
+        for o in grouped_orders:
+            ot = (o.get('order_type') or '').upper()
+            
+            # Regla de descarte de SL (Stop Loss)
+            # Si el tipo contiene STOP pero NO contiene TAKE_PROFIT, lo tratamos como SL
+            is_sl = 'STOP' in ot and 'TAKE_PROFIT' not in ot
+            if not is_sl:
+                filtered_orders.append(o)
+
+        buys = [o for o in filtered_orders if o['side'] == 'buy']
+        sells = [o for o in filtered_orders if o['side'] == 'sell']
+        
+        matched_trades = []
+        used_sells = set()
+        
+        # Sort chronologically oldest first
+        buys.sort(key=lambda x: x['timestamp'])
+        sells.sort(key=lambda x: x['timestamp'])
+        
+        # Forward Matching: For each Buy, look for its perfect Exit in the future
+        for buy in buys:
+            if not buy.get('can_be_entry', True):
+                continue
+                
+            bracket_sell = None
+            for sell in sells:
+                # Regla de Consumo Único (Pop)
+                if sell['order_id'] in used_sells:
+                    continue
+                    
+                # Regla Temporal Hacia Adelante (La salida debe ser posterior o igual a la entrada)
+                if sell['timestamp'] < buy['timestamp']:
+                    continue
+                    
+                # Emparejamiento Atómico Estricto de Cantidad (con tolerancia para Nudging)
+                if abs(buy['amount'] - sell['amount']) < 1e-4:
+                    bracket_sell = sell
+                    used_sells.add(sell['order_id'])
+                    break  # Pop & Break
+                    
+            if bracket_sell:
+                pnl_data = tracker.calculate_pnl(
+                    entry_price=buy['price'], entry_amount=buy['amount'], entry_fee=buy['fee'],
+                    exit_price=bracket_sell['price'], exit_amount=bracket_sell['amount'], exit_fee=bracket_sell['fee'],
+                    entry_side='buy'
+                )
+                
+                matched_trades.append(tracker._format_trade_data(buy, bracket_sell, pnl_data))
+
+        return matched_trades
+
+class FIFOMatchStrategy(MatchStrategy):
+    """
+    Standard FIFO (First-In-First-Out). 
+    Matches earliest buys first, supporting partial fills.
+    """
+    def match(self, tracker: 'TradeTracker', fills: List[Fill], session: Optional[Session] = None) -> List[Dict[str, Any]]:
+        grouped_orders = tracker._group_fills_by_order(fills, session=session)
+        # We need a copy of buys that we can "consume"
+        buys = [dict(o) for o in grouped_orders if o['side'] == 'buy']
+        sells = [dict(o) for o in grouped_orders if o['side'] == 'sell']
+        
+        matched_trades = []
+        
+        for sell in sells:
+            remaining_sell_qty = sell['amount']
+            
+            for buy in buys:
+                if remaining_sell_qty <= 0:
+                    break
+                if buy['amount'] <= 0 or buy['timestamp'] >= sell['timestamp'] or not buy.get('can_be_entry', True):
+                    continue
+                
+                match_qty = min(buy['amount'], remaining_sell_qty)
+                
+                # Proportional fee for partial match
+                buy_fee_share = (match_qty / buy['amount']) * buy['fee'] if buy['amount'] > 0 else 0
+                sell_fee_share = (match_qty / sell['amount']) * sell['fee'] if sell['amount'] > 0 else 0
+                
+                pnl_data = tracker.calculate_pnl(
+                    entry_price=buy['price'], entry_amount=match_qty, entry_fee=buy_fee_share,
+                    exit_price=sell['price'], exit_amount=match_qty, exit_fee=sell_fee_share,
+                    entry_side='buy'
+                )
+                
+                matched_trades.append(tracker._format_trade_data(buy, sell, pnl_data, match_qty))
+                
+                buy['amount'] -= match_qty
+                buy['fee'] -= buy_fee_share
+                remaining_sell_qty -= match_qty
+
+        return matched_trades
+
+class LIFOMatchStrategy(MatchStrategy):
+    """
+    Standard LIFO (Last-In-First-Out).
+    Matches latest buys first, supporting partial fills.
+    """
+    def match(self, tracker: 'TradeTracker', fills: List[Fill], session: Optional[Session] = None) -> List[Dict[str, Any]]:
+        grouped_orders = tracker._group_fills_by_order(fills, session=session)
+        buys = [dict(o) for o in grouped_orders if o['side'] == 'buy']
+        sells = [dict(o) for o in grouped_orders if o['side'] == 'sell']
+        
+        matched_trades = []
+        
+        for sell in sells:
+            remaining_sell_qty = sell['amount']
+            # Sort buys by timestamp DESC for LIFO
+            candidate_buys = sorted(
+                [b for b in buys if b['timestamp'] < sell['timestamp'] and b['amount'] > 0 and b.get('can_be_entry', True)],
+                key=lambda x: x['timestamp'], 
+                reverse=True
+            )
+            
+            for buy in candidate_buys:
+                if remaining_sell_qty <= 0:
+                    break
+                
+                match_qty = min(buy['amount'], remaining_sell_qty)
+                
+                buy_fee_share = (match_qty / buy['amount']) * buy['fee'] if buy['amount'] > 0 else 0
+                sell_fee_share = (match_qty / sell['amount']) * sell['fee'] if sell['amount'] > 0 else 0
+                
+                pnl_data = tracker.calculate_pnl(
+                    entry_price=buy['price'], entry_amount=match_qty, entry_fee=buy_fee_share,
+                    exit_price=sell['price'], exit_amount=match_qty, exit_fee=sell_fee_share,
+                    entry_side='buy'
+                )
+                
+                matched_trades.append(tracker._format_trade_data(buy, sell, pnl_data, match_qty))
+                
+                buy['amount'] -= match_qty
+                buy['fee'] -= buy_fee_share
+                remaining_sell_qty -= match_qty
+
+        return matched_trades
+
+
+class LifecycleNettingStrategy(MatchStrategy):
+    """
+    Bio-Atomic Lifecycle (Binance Netting Mode).
+    Groups trades into "Life Cycles" that start and end at 0 balance.
+    Matches the entire cycle as a single block based on net volume.
+    """
+    def match(self, tracker: 'TradeTracker', fills: List[Fill], session: Optional[Session] = None) -> List[Dict[str, Any]]:
+        if not fills:
+            return []
+            
+        # We need a copy of fills because we might modify them (grouped_orders is fine too)
+        orders = tracker._group_fills_by_order(fills, session=session)
+        
+        matched_trades = []
+        current_cycle = []
+        current_balance = 0.0
+        
+        for o in orders:
+            current_cycle.append(o)
+            side_mult = 1.0 if o['side'] == 'buy' else -1.0
+            current_balance += o['amount'] * side_mult
+            
+            # Check if cycle closed (balance returns to 0)
+            if abs(current_balance) < 1e-8:
+                # Close Cycle
+                first_fill = current_cycle[0]
+                last_fill = current_cycle[-1]
+                
+                cycle_buys = [x for x in current_cycle if x['side'] == 'buy']
+                cycle_sells = [x for x in current_cycle if x['side'] == 'sell']
+                
+                total_buy_qty = sum(x['amount'] for x in cycle_buys)
+                total_sell_qty = sum(x['amount'] for x in cycle_sells)
+                
+                # Total Volume of the cycle is the amount realized
+                total_amount = max(total_buy_qty, total_sell_qty)
+                
+                # Weighted average prices
+                avg_buy_price = sum(x['price'] * x['amount'] for x in cycle_buys) / total_buy_qty if total_buy_qty > 0 else 0
+                avg_sell_price = sum(x['price'] * x['amount'] for x in cycle_sells) / total_sell_qty if total_sell_qty > 0 else 0
+                
+                total_buy_fee = sum(x['fee'] for x in cycle_buys)
+                total_sell_fee = sum(x['fee'] for x in cycle_sells)
+                
+                # In Netting mode, the cycle is 0-to-0.
+                # We determine the direction of the cycle by the side of the first fill.
+                cycle_side = first_fill['side']
+                
+                if cycle_side == 'buy':
+                    entry_price, exit_price = avg_buy_price, avg_sell_price
+                    entry_fee, exit_fee = total_buy_fee, total_sell_fee
+                else:
+                    # Short cycle
+                    entry_price, exit_price = avg_sell_price, avg_buy_price
+                    entry_fee, exit_fee = total_sell_fee, total_buy_fee
+                
+                pnl_data = tracker.calculate_pnl(
+                    entry_price=entry_price, entry_amount=total_amount, entry_fee=entry_fee,
+                    exit_price=exit_price, exit_amount=total_amount, exit_fee=exit_fee,
+                    entry_side=cycle_side
+                )
+                
+                # Build synthetic "Buy" and "Sell" order objects for the formatter
+                # using the timestamps of the cycle start and end.
+                synth_buy = {**first_fill, 'price': entry_price, 'amount': total_amount, 'fee': entry_fee, 'side': cycle_side}
+                synth_sell = {**last_fill, 'price': exit_price, 'amount': total_amount, 'fee': exit_fee, 'side': ('sell' if cycle_side == 'buy' else 'buy')}
+                
+                matched_trades.append(tracker._format_trade_data(synth_buy, synth_sell, pnl_data))
+                
+                # Reset
+                current_cycle = []
+                current_balance = 0.0
+
+        return matched_trades
+
+
+class TradeTracker:
+    """
+    Trade tracker that delegates matching logic to modular strategies.
+    Supports FIFO, LIFO, and ATOMIC (Exact Match).
     """
     
     def __init__(self, symbol: str):
         self.symbol = symbol
+        
     
     def calculate_pnl(
         self,
@@ -31,147 +310,194 @@ class FIFOTracker:
     ) -> Tuple[float, float]:
         """
         Calculate PnL for a matched trade pair.
-        
-        Args:
-            entry_price: Entry price
-            entry_amount: Entry amount
-            entry_fee: Entry fee
-            exit_price: Exit price
-            exit_amount: Exit amount
-            exit_fee: Exit fee
-            entry_side: 'buy' or 'sell'
-            
-        Returns:
-            Tuple of (net_pnl, pnl_percentage)
         """
-        # Use the minimum amount to handle partial fills
         trade_amount = min(entry_amount, exit_amount)
         
         if entry_side == 'buy':
-            # Long position: profit when exit_price > entry_price
             gross_pnl = (exit_price - entry_price) * trade_amount
         else:
-            # Short position: profit when exit_price < entry_price
             gross_pnl = (entry_price - exit_price) * trade_amount
         
-        # Net PnL after deducting both entry and exit fees
         net_pnl = gross_pnl - entry_fee - exit_fee
-        
-        # Calculate percentage return
         cost_basis = entry_price * trade_amount + entry_fee
         pnl_percentage = (net_pnl / cost_basis * 100) if cost_basis > 0 else 0.0
         
         return net_pnl, pnl_percentage
-    
-    def match_trades_fifo(self, fills: List[Fill]) -> List[Dict[str, Any]]:
+
+    def _group_fills_by_order(self, fills: List[Fill], session: Optional[Session] = None) -> List[Dict[str, Any]]:
         """
-        Match fills using FIFO algorithm to create complete trades.
-        
-        Args:
-            fills: List of Fill objects sorted by timestamp
-            
-        Returns:
-            List of matched trade dictionaries ready for database storage
+        Group individual fills by their order_id to reconstruct full orders.
         """
-        # Separate buys and sells
-        buy_queue = deque()
-        sell_queue = deque()
-        
-        matched_trades = []
-        
+        orders = {}
         for fill in fills:
-            if fill.side == 'buy':
-                buy_queue.append(fill)
-            else:
-                sell_queue.append(fill)
+            oid = fill.order_id
+            if not oid or oid == "" or oid == "None":
+                oid = f"manual_{fill.timestamp}_{fill.trade_id}"
             
-            # Try to match while we have both buys and sells
-            while buy_queue and sell_queue:
-                buy = buy_queue[0]
-                sell = sell_queue[0]
-                
-                # Determine which side is the entry
-                if buy.timestamp <= sell.timestamp:
-                    # Buy happened first (long position)
-                    entry = buy
-                    exit = sell
-                    entry_side = 'buy'
-                else:
-                    # Sell happened first (short position)
-                    entry = sell
-                    exit = buy
-                    entry_side = 'sell'
-                
-                # Calculate trade amount (handle partial fills)
-                trade_amount = min(entry.amount, exit.amount)
-                
-                # Calculate PnL
-                net_pnl, pnl_percentage = self.calculate_pnl(
-                    entry_price=entry.price,
-                    entry_amount=trade_amount,
-                    entry_fee=entry.fee,
-                    exit_price=exit.price,
-                    exit_amount=trade_amount,
-                    exit_fee=exit.fee,
-                    entry_side=entry_side
-                )
-                
-                # Calculate duration
-                duration_seconds = abs(exit.timestamp - entry.timestamp) // 1000
-                
-                # Create trade record
-                trade_data = {
-                    'symbol': self.symbol,
-                    'entry_side': entry.side,
-                    'entry_price': entry.price,
-                    'entry_amount': trade_amount,
-                    'entry_fee': entry.fee,
-                    'entry_timestamp': entry.timestamp,
-                    'entry_datetime': entry.datetime,
-                    'exit_side': exit.side,
-                    'exit_price': exit.price,
-                    'exit_amount': trade_amount,
-                    'exit_fee': exit.fee,
-                    'exit_timestamp': exit.timestamp,
-                    'exit_datetime': exit.datetime,
-                    'pnl_net': net_pnl,
-                    'pnl_percentage': pnl_percentage,
-                    'duration_seconds': duration_seconds
+            if oid not in orders:
+                orders[oid] = {
+                    'order_id': oid,
+                    'symbol': fill.symbol,
+                    'side': fill.side,
+                    'amount': 0.0,
+                    'price_sum': 0.0,
+                    'cost': 0.0,
+                    'fee': 0.0,
+                    'timestamp': fill.timestamp,
+                    'datetime': fill.datetime,
+                    'fill_count': 0,
+                    'order_type': None,
+                    'can_be_entry': True,
+                    'originator': 'UNKNOWN',
+                    'fills': [] # Total transparency: store the raw fills
                 }
+            
+            o = orders[oid]
+            o['amount'] += fill.amount
+            o['cost'] += fill.amount * fill.price
+            o['fee'] += fill.fee
+            o['fill_count'] += 1
+            o['fills'].append({
+                'trade_id': fill.trade_id,
+                'order_id': fill.order_id,
+                'price': fill.price,
+                'amount': fill.amount,
+                'fee': fill.fee,
+                'datetime': fill.datetime.isoformat() if hasattr(fill.datetime, 'isoformat') else str(fill.datetime),
+                'role': 'Maker' # Defaulting or extracting from raw info if needed
+            })
+            # Try to enrich with data from orders table if available
+            # Note: In a real sync, we should fetch all relevant orders beforehand for performance
+            if getattr(fill, "order_type", None) and o.get("order_type") is None:
+                o["order_type"] = fill.order_type
+            if hasattr(fill, "can_be_entry"):
+                o["can_be_entry"] = fill.can_be_entry
+            if hasattr(fill, "originator"):
+                o["originator"] = fill.originator
                 
-                matched_trades.append(trade_data)
-                
-                # Update remaining amounts
-                entry.amount -= trade_amount
-                exit.amount -= trade_amount
-                
-                # Remove fully consumed fills
-                if entry.amount <= 0.00000001:  # Small epsilon for float comparison
-                    buy_queue.popleft() if entry.side == 'buy' else sell_queue.popleft()
-                if exit.amount <= 0.00000001:
-                    sell_queue.popleft() if exit.side == 'sell' else buy_queue.popleft()
+            # Weighted average price
+            if o['amount'] > 0:
+                o['price'] = o['cost'] / o['amount']
+            else:
+                o['price'] = fill.price
+            
+            # Keep earliest timestamp for the order
+            if fill.timestamp < o['timestamp']:
+                o['timestamp'] = fill.timestamp
+                o['datetime'] = fill.datetime
+
+        # Enrichment step: Fetch metadata from the 'orders' table for all gathered IDs
+        if orders:
+            try:
+                # If no session is provided, try to get a direct one, but handle failures (e.g., in unit tests)
+                inner_session = session
+                should_close = False
+                if inner_session is None:
+                    try:
+                        inner_session = get_session_direct()
+                        should_close = True
+                    except Exception:
+                        # In pure unit tests, get_session_direct() might fail or tables might not exist
+                        inner_session = None
+
+                if inner_session:
+                    order_ids = list(orders.keys())
+                    
+                    # Enrichment from BasicOrders
+                    stmt_basic = select(BasicOrder).where(BasicOrder.id.in_(order_ids))
+                    db_basic = inner_session.exec(stmt_basic).all()
+                    for db_o in db_basic:
+                        if db_o.id in orders:
+                            orders[db_o.id]['can_be_entry'] = db_o.can_be_entry
+                            orders[db_o.id]['originator'] = db_o.originator
+                            orders[db_o.id]['order_type'] = db_o.order_type
+                    
+                    # Enrichment from ConditionalOrders
+                    stmt_cond = select(ConditionalOrder).where(ConditionalOrder.id.in_(order_ids))
+                    db_cond = inner_session.exec(stmt_cond).all()
+                    for db_o in db_cond:
+                        if db_o.id in orders:
+                            orders[db_o.id]['can_be_entry'] = db_o.can_be_entry
+                            orders[db_o.id]['originator'] = db_o.originator
+                            orders[db_o.id]['order_type'] = "ALGO" # Normalize per glossary
+                    
+                    if should_close:
+                        inner_session.close()
+            except Exception:
+                # Silently fail enrichment in case of DB issues (common in logic-only tests)
+                pass
+
+        return sorted(orders.values(), key=lambda x: x['timestamp'])
+
+    def _format_trade_data(self, buy: Dict, sell: Dict, pnl_data: Tuple[float, float], amount: float = 0.0) -> Dict[str, Any]:
+        """Helper to format matched trade data consistency."""
+        net_pnl, pnl_percentage = pnl_data
+        trade_amount = amount if amount > 0 else buy['amount']
+        return {
+            'symbol': self.symbol,
+            'entry_side': 'buy',
+            'entry_price': buy['price'],
+            'entry_amount': trade_amount,
+            'entry_fee': (trade_amount / buy['amount'] * buy['fee']) if amount and buy['amount'] > 0 else buy['fee'],
+            'entry_timestamp': buy['timestamp'],
+            'entry_datetime': buy['datetime'],
+            'exit_side': 'sell',
+            'exit_price': sell['price'],
+            'exit_amount': trade_amount,
+            'exit_fee': (trade_amount / sell['amount'] * sell['fee']) if amount and sell['amount'] > 0 else sell['fee'],
+            'exit_timestamp': sell['timestamp'],
+            'exit_datetime': sell['datetime'],
+            'pnl_net': net_pnl,
+            'pnl_percentage': pnl_percentage,
+            'duration_seconds': abs(sell['timestamp'] - buy['timestamp']) // 1000,
+            'entry_order_id': str(buy.get('order_id') or ''),
+            'exit_order_id': str(sell.get('order_id') or ''),
+            'entry_order_type': buy.get('order_type'),
+            'exit_order_type': sell.get('order_type'),
+            'originator': buy.get('originator', 'MANUAL'),
+            'can_be_entry': buy.get('can_be_entry', True),
+            'entry_fills': buy.get('fills', []),
+            'exit_fills': sell.get('fills', []),
+        }
+
+    def match_trades(self, fills: List[Fill], strategy_name: str = "atomic_fifo", session: Optional[Session] = None) -> List[Dict[str, Any]]:
+        """
+        Main entry point for matching trades using a named strategy.
+        """
+        strategies = {
+            "fifo": FIFOMatchStrategy(),
+            "lifo": LIFOMatchStrategy(),
+            "atomic_fifo": AtomicMatchStrategy(is_fifo=True),
+            "atomic_lifo": AtomicMatchStrategy(is_fifo=False),
+            "intent_fifo": IntentMatchStrategy(),
+            "binance_netting": LifecycleNettingStrategy(),
+        }
         
-        return matched_trades
+        strategy = strategies.get(strategy_name.lower(), strategies["atomic_fifo"])
+        return strategy.match(self, fills, session=session)
+
+    def match_trades_fifo(self, fills: List[Fill]) -> List[Dict[str, Any]]:
+        """Legacy support for FIFO call, delegates to strategy."""
+        return self.match_trades(fills, "fifo")
+
+    def match_trades_lifo(self, fills: List[Fill]) -> List[Dict[str, Any]]:
+        """Legacy support for LIFO call, delegates to strategy."""
+        return self.match_trades(fills, "lifo")
     
-    def process_and_save_trades(self) -> int:
+    def process_and_save_trades(self, strategy_name: str = "atomic_fifo") -> int:
         """
         Process all fills for the symbol and save matched trades to database.
-        
-        Returns:
-            Number of new trades created
         """
         with get_session_direct() as session:
-            # Fetch all fills for this symbol, sorted by timestamp
             statement = select(Fill).where(Fill.symbol == self.symbol).order_by(Fill.timestamp)
             fills = session.exec(statement).all()
             
             if not fills:
                 return 0
             
-            # Match trades using FIFO
-            matched_trades = self.match_trades_fifo(fills)
+            # Use the new modular matching logic
+            matched_trades = self.match_trades(fills, strategy_name)
             
-            # Check which trades already exist to avoid duplicates
             existing_trade_keys = set()
             existing_statement = select(Trade).where(Trade.symbol == self.symbol)
             existing_trades = session.exec(existing_statement).all()
@@ -181,18 +507,19 @@ class FIFOTracker:
                     existing.entry_timestamp,
                     existing.exit_timestamp,
                     existing.entry_price,
-                    existing.exit_price
+                    existing.exit_price,
+                    existing.entry_amount
                 )
                 existing_trade_keys.add(key)
             
-            # Save new trades
             new_trades_count = 0
             for trade_data in matched_trades:
                 key = (
                     trade_data['entry_timestamp'],
                     trade_data['exit_timestamp'],
                     trade_data['entry_price'],
-                    trade_data['exit_price']
+                    trade_data['exit_price'],
+                    trade_data['entry_amount']
                 )
                 
                 if key not in existing_trade_keys:
@@ -203,76 +530,66 @@ class FIFOTracker:
             session.commit()
             return new_trades_count
 
-    def compute_open_positions(self) -> List[Dict[str, Any]]:
-        """Compute open (unmatched) positions for the current symbol.
-
-        Returns a list of dicts with remaining entry fills (side, price, amount, fee, timestamp, datetime).
+    def compute_open_positions(self, logic: str = "atomic_fifo", fills: List[Fill] = None, session: Optional[Session] = None) -> List[Dict[str, Any]]:
         """
-        with get_session_direct() as session:
-            statement = select(Fill).where(Fill.symbol == self.symbol).order_by(Fill.timestamp)
-            fills = session.exec(statement).all()
+        Compute open (unmatched) positions using the same strategy as the main matching.
+        Delegates to match_trades() to identify which orders were consumed, then
+        reports the leftover buys (open longs) and orphan sells (sells without a prior buy).
+        """
+        if fills is None:
+            with get_session_direct() as session:
+                statement = select(Fill).where(Fill.symbol == self.symbol).order_by(Fill.timestamp)
+                fills = list(session.exec(statement).all())
 
-        buy_queue = deque()
-        sell_queue = deque()
+        # Run the same strategy to find matched trades
+        matched_trades = self.match_trades(fills, logic, session=session)
 
-        # Work on shallow copies to avoid mutating DB objects
-        class _FillCopy:
-            def __init__(self, f: Fill):
-                self.side = f.side
-                self.price = f.price
-                self.amount = float(f.amount)
-                self.fee = float(f.fee or 0.0)
-                self.timestamp = f.timestamp
-                self.datetime = f.datetime
+        # Collect the entry/exit timestamps that were consumed in matches
+        used_entry_timestamps = set()
+        used_exit_timestamps = set()
+        for t in matched_trades:
+            used_entry_timestamps.add(t['entry_timestamp'])
+            used_exit_timestamps.add(t['exit_timestamp'])
 
-        for f in fills:
-            fc = _FillCopy(f)
-            if fc.side == 'buy':
-                buy_queue.append(fc)
-            else:
-                sell_queue.append(fc)
+        # Group fills into orders (same as matching does internally)
+        grouped_orders = self._group_fills_by_order(fills, session=session)
+        buys = [o for o in grouped_orders if o['side'] == 'buy']
+        sells = [o for o in grouped_orders if o['side'] == 'sell']
 
-            # match as we go
-            while buy_queue and sell_queue:
-                buy = buy_queue[0]
-                sell = sell_queue[0]
+        open_positions = []
 
-                if buy.timestamp <= sell.timestamp:
-                    entry = buy
-                    exit = sell
-                else:
-                    entry = sell
-                    exit = buy
-
-                trade_amount = min(entry.amount, exit.amount)
-
-                # reduce amounts
-                entry.amount -= trade_amount
-                exit.amount -= trade_amount
-
-                if entry.amount <= 0.00000001:
-                    if entry is buy:
-                        buy_queue.popleft()
-                    else:
-                        sell_queue.popleft()
-                if exit.amount <= 0.00000001:
-                    if exit is sell:
-                        sell_queue.popleft()
-                    else:
-                        buy_queue.popleft()
-
-        # collect remaining open positions
-        open_positions: List[Dict[str, Any]] = []
-        for q in (buy_queue, sell_queue):
-            for remaining in q:
+        # Unmatched buys → open long positions
+        for b in buys:
+            if b['timestamp'] not in used_entry_timestamps:
                 open_positions.append({
                     'symbol': self.symbol,
-                    'entry_side': remaining.side,
-                    'entry_price': remaining.price,
-                    'entry_amount': remaining.amount,
-                    'entry_fee': remaining.fee,
-                    'entry_timestamp': remaining.timestamp,
-                    'entry_datetime': remaining.datetime,
+                    'entry_side': 'buy',
+                    'entry_price': b['price'],
+                    'entry_amount': b['amount'],
+                    'entry_fee': b['fee'],
+                    'entry_timestamp': b['timestamp'],
+                    'entry_datetime': b['datetime'],
+                    'entry_order_id': b.get('order_id'),
+                    'entry_order_type': b.get('order_type'),
+                    'originator': b.get('originator', 'MANUAL'),
+                    'entry_fills': b.get('fills', []), # Propagate for UI expansion
+                    'exit_fills': []
+                })
+
+        # Unmatched sells → orphan sells (closed before history or data gap)
+        for s in sells:
+            if s['timestamp'] not in used_exit_timestamps:
+                open_positions.append({
+                    'symbol': self.symbol,
+                    'entry_side': 'sell',
+                    'entry_price': s['price'],
+                    'entry_amount': s['amount'],
+                    'entry_fee': s['fee'],
+                    'entry_timestamp': s['timestamp'],
+                    'entry_datetime': s['datetime'],
+                    'entry_order_id': s.get('order_id'),
+                    'entry_order_type': s.get('order_type'),
+                    'is_orphan': True,  # Marker for UI
                 })
 
         return open_positions

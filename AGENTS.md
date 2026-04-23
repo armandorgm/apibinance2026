@@ -1,0 +1,322 @@
+# AGENTS.md
+
+> **Single source of truth** for all AI agents, IDEs, and coding assistants working in this repository.
+> Compatible with: Antigravity, RooCode, Continue, Cursor, GitHub Copilot, Claude Dev, and any AGENTS.md-aware tool.
+
+---
+
+## Project Overview
+
+**apibinance2026** is a full-stack automated trading dashboard for Binance Futures (USDⓈ-M). It provides:
+- Real-time trade history with FIFO/LIFO PnL matching
+- Automated trading bot with rules engine executing orders on Binance Futures
+- Bot monitoring dashboard with signal history and rule trigger tracking
+- Full visibility of all order types: standard orders + Algo conditional orders (Stop Loss, Take Profit, Trailing Stop)
+
+**Stack:** Python 3.11 / FastAPI · Next.js 14 / TypeScript · SQLite (SQLModel) · CCXT + Direct Binance REST API · React Query
+
+---
+
+## Project Structure
+
+```
+apibinance2026/
+│
+├── backend/                          # API Backend (Python/FastAPI)
+│   └── app/
+│       ├── main.py                   # FastAPI setup, CORS, main routes
+│       ├── api/
+│       │   └── routes.py             # REST endpoints (GET /trades/history, POST /sync, etc.)
+│       ├── core/
+│       │   ├── config.py             # Configuration and environment variables
+│       │   └── exchange.py           # CCXT/Binance management, rate limits
+│       ├── db/
+│       │   └── database.py           # SQLModel models (Fill, Trade), DB management
+│       └── services/
+│           └── tracker_logic.py      # FIFO/LIFO/Qty-match logic — pairs buys/sells, calculates PnL
+│
+├── frontend/                         # Dashboard Frontend (Next.js)
+│   └── app/
+│       ├── layout.tsx                # Main layout with QueryProvider
+│       ├── page.tsx                  # Main dashboard page
+│       └── globals.css               # Global Tailwind styles
+│   └── components/
+│       ├── trade-table.tsx           # Operations table (green/red PnL)
+│       ├── trade-chart.tsx           # Recharts chart with entry/exit points
+│       ├── bot-monitor.tsx           # Bot monitoring dashboard
+│       ├── sync-button.tsx           # Binance sync button
+│       └── stats-card.tsx            # Statistics cards
+│   └── hooks/
+│       └── use-trades.ts             # React Query hooks (useTrades, useStats, useSyncTrades)
+│   └── lib/
+│       └── api.ts                    # API client (fetchTrades, syncTrades, fetchStats)
+│
+├── docs/                             # Documentation and standards
+│   ├── PROJECT_MAP.md                # Collective brain — always keep updated
+│   ├── STANDARDS.md                  # Style and convention guides
+│   ├── incidents/                    # Problem resolution logs (YYYY-MM-DD-description.md)
+│   └── logs/                         # Feature execution plans archive
+│
+├── AGENTS.md                         # ← YOU ARE HERE — Universal AI agent config
+├── .agents/                          # Antigravity-specific agents/workflows/skills
+│   └── workflows/                    # Slash command workflows
+│       ├── gitflow-process.md        # /gitflow-process
+│       ├── implementation-safety.md  # /implementation-safety
+│       └── orquestador.md            # /orquestador
+├── .cursorrules                      # Cursor compat redirect → see AGENTS.md
+├── .gemini/gemini.md                 # Antigravity compat redirect → see AGENTS.md
+├── README.md
+├── QUICKSTART.md
+└── .gitignore
+```
+
+---
+
+## Key Components
+
+### Backend
+
+| Component | File | Responsibility |
+|-----------|------|----------------|
+| **tracker_logic.py** | `backend/app/services/` | FIFO algorithm for buy/sell matching, net PnL calculation (discounting commissions), partial fill handling |
+| **exchange.py** | `backend/app/core/` | CCXT + direct Binance REST calls, rate limiting, retries |
+| **database.py** | `backend/app/db/` | `Fill` model (raw Binance executions), `Trade` model (matched ops with PnL), SQLModel ORM |
+| **routes.py** | `backend/app/api/` | `GET /api/trades/history`, `POST /api/sync`, `GET /api/stats`, `GET /api/open-orders` |
+
+### Frontend
+
+| Component | File | Responsibility |
+|-----------|------|----------------|
+| **page.tsx** | `frontend/app/` | Orchestrates all components, manages selected symbol state |
+| **bot-monitor.tsx** | `frontend/components/` | Real-time bot status, signal history, rule trigger monitoring (5s auto-refresh) |
+| **trade-table.tsx** | `frontend/components/` | Responsive table with PnL colors, date/duration formatting |
+| **use-trades.ts** | `frontend/hooks/` | React Query cache/sync, hooks, auto-invalidation after sync |
+
+---
+
+## Binance API Critical Notes
+
+### Futures USDⓈ-M Orders
+
+**Main endpoint:** `POST /fapi/v1/order` — requires HMAC-SHA256 signature and API key in header.
+
+**Invalid combinations to avoid:**
+- `reduceOnly` cannot be used in Hedge Mode or with `closePosition`
+- `price` and `priceMatch` are mutually exclusive
+- `selfTradePreventionMode` only takes effect when `timeInForce` is `IOC`, `GTC`, or `GTD`
+
+**CRITICAL — 2025 Breaking Change:**  
+As of **2025-12-09**, conditional orders (`STOP_MARKET`, `TAKE_PROFIT_MARKET`, `STOP`, `TAKE_PROFIT`, `TRAILING_STOP_MARKET`) migrated to the **Algo Service**. Using them on `/fapi/v1/order` after that date returns error `-4120 STOP_ORDER_SWITCH_ALGO`.  
+**New endpoint: `/fapi/v1/algo/newOrder`**
+
+**Testnet base URL:** `https://demo-fapi.binance.com` — use for all testing without risk.
+
+### Open Orders Aggregation
+
+The system must aggregate from **two sources** to get full order visibility:
+1. `/fapi/v1/openOrders` — standard open orders
+2. `/fapi/v1/algo/openOrders` — conditional Algo orders (SL, TP, Trailing)
+
+---
+
+## Agent Roles
+
+This project uses three specialized agent personas:
+
+| Role | Mandate | Primary Tools |
+|------|---------|---------------|
+| **Architect** | Analyze requirements, design technical strategy, delegate tasks. Primary tool: Planning Mode. | Planning Mode, documentation |
+| **Developer** | Code implementation, refactoring, terminal operations. Receives only the technical context needed for the specific task. | Code editor, terminal |
+| **Tester** | Validation specialist. Uses Browser Subagent for UI testing, DOM state capture, and verification session recording. | Browser Subagent |
+
+**Orchestrator (`/orquestador`):** Low-consumption router. Mandate: Delegate, never process. Prohibits greetings or explanations. Always demands Unified Diff format. Output: `[Specialized Agent] → [Direct technical instruction]`.
+
+---
+
+## Execution Standards
+
+Every AI agent working in this repository MUST follow this lifecycle:
+
+### 1. Execution Plan Lifecycle (`.temp/` folder)
+
+All complex procedures require **milestone-based traceability** inside `.temp/PLAN_EJECUCION.md`. This file is a **cumulative, multi-conversation log** of active plans.
+
+- **Non-Destructive Management**: 
+    - **CRITICAL**: No agent can overwrite or delete `PLAN_EJECUCION.md`. You must only **append** or **edit** the section created by your specific conversation.
+    - **Separator**: Use `---` as a horizontal separator between different conversation sections.
+    - **Persistence**: Each section persists until its creator (agent/conversation) finishes the task or the user manually deletes it.
+    - **Foreign Plan Edit**: If you *must* edit or delete a plan from a different conversation, you MUST ask the user for permission with exactly: *"AUTORIZA A LA EDICION/BORRADO DE UN PLAN AJENO A LA CONVERSACION?"*
+
+- **Standardized Template**: Every new plan section must follow this structure:
+    ```markdown
+    📋 PLANTILLA: PLAN DE EJECUCIÓN - [NOMBRE DEL PROYECTO/SISTEMA]
+    ID de Conversación: [UUID-O-ID-DE-CHAT]
+    Estado: 🟢 [EN PROGRESO / PENDIENTE / FINALIZADO]
+    Rama: [tipo]/[nombre-de-la-rama]
+
+    🎯 Objetivos
+    [Breve descripción]
+
+    🚀 Hoja de Roadmap
+    Fase 1: ...
+    Fase 2: ...
+
+    📝 Logs de Progreso
+    YYYY-MM-DD: ...
+    ```
+
+- **Before (Initial Phase):** Append your plan to `PLAN_EJECUCION.md` detailing the roadmap and objectives.
+- **During (Progress Phase):** Update **your section** at key milestones.
+- **After (Closing Phase):** Update your section to `FINALIZADO` and record the final system state.
+
+**User Sovereignty:** On completion, follow the Exit Protocol below to manage your section.
+
+### 2. Context Switching & Branch Management
+
+If a new plan or requirement does not correspond to the current Git branch:
+
+- **Postponement Record:** Before switching context, update the current `PLAN_EJECUCION.md` with status `"POSTPONED"`, detailing what remains to be done.
+- **Safety Stash:** Run `git stash` on current changes and record the stash pointer/name in the postponed plan document.
+- **Branch Management:** Find an existing branch for the new plan; if none exists, create one with clear naming.
+
+### 3. Latency Management (Local API)
+
+Changes to the code are not instantaneous in the runtime:
+
+- **Prudential Wait:** After modifying a local API, wait 5–10 seconds before attempting to execute or test the endpoint.
+- **False Error Handling:** If a connection error or 500 is received immediately after a change, retry after an additional brief pause before reporting a failure.
+
+### 4. Implementation & Testing Standards
+
+Every new feature or fix must meet:
+
+- **Mandatory Testing:** A task is NOT considered "finished" without corresponding tests (unit or integration). Organize in mirror folders (e.g., `src/auth` → `tests/auth`).
+- **SOLID Principles:**
+  - **S** (Single Responsibility): Separate business logic from persistence/UI.
+  - **O/P** (Open/Closed): Prioritize extension via interfaces.
+  - **D** (Dependency Inversion): Inject dependencies to facilitate Mocks/Stubs.
+- **Simplicity Criterion:** If SOLID generates unnecessary over-engineering, prioritize clean, maintainable code (YAGNI).
+
+### 5. Permanent Incident Log
+
+Once the solution is validated and temporaries are closed, generate a report in `docs/incidents/`:
+
+- **Naming:** `YYYY-MM-DD-short-description.md`
+- **Structure:** Problem, Solution (including mention of tests), Impact.
+- **Language:** Use ownership verbs (Led, Designed, Implemented, Launched).
+- **Technical Registry (Command Feed):** Update the KI `technical-command-registry` with successful terminal commands and environmental gotchas to prevent repetitive execution errors.
+
+### 6. Exit Protocol
+
+On completion of your specific plan, the agent MUST emit:
+> *"The execution cycle has concluded. Logs in `.temp/` (your section) and report in `docs/incidents/`. Branch/stash state has been managed as needed. Do you want to delete your plan section from temporaries or apply a repair/modification/restoration plan?"*
+
+### 7. Implementation Safety Standard (New)
+
+To prevent breaking existing code during feature expansion:
+
+- **Impact Scan**: Always use `python scripts/impact_analyzer.py --impact <file>` to find the full dependency chain and "blast radius" before modifying its interface. Run `python scripts/impact_analyzer.py --scan` to refresh the graph if multiple files were added.
+- **Frontend-Backend Sync**: If an API endpoint is changed, the corresponding React Query hook and fetcher MUST be updated in the same PR.
+- **SQLite Migrations**: If `database.py` models change, provide a script to add columns to the existing SQLite DB with sensible defaults.
+- **Indentation & Syntax**: Always run a "dry run" or syntax check (parsing) after every modification. Parse errors are unacceptable.
+
+---
+
+## Prevención de Regresiones y Flujo de Trabajo Seguro
+
+1. **Fase de Análisis de Impacto (Obligatoria):** Antes de generar o escribir código para una nueva funcionalidad, el agente DEBE analizar el proyecto actual, identificar qué módulos o funciones podrían verse afectados, listar las dependencias y ESPERAR la confirmación del usuario antes de proceder con la escritura.
+2. **Principio de Integridad:** Cualquier modificación debe respetar rigurosamente las firmas de las funciones existentes. Si un cambio requiere modificar un módulo dependiente (por ejemplo, alterar una interfaz que rompa la visualización en el frontend), debe notificarse explícitamente y requerir autorización antes de ejecutar el cambio.
+3. **Modularización Extrema (Divide y Vencerás):** Obligatorio el uso de interfaces o tipos estrictos. Si se necesita alterar un objeto, función o componente que ya está en uso en otra parte del proyecto, se debe PRIORIZAR extender la funcionalidad en lugar de mutar y romper la original.
+4. **Validación en Modo Planning:** Todo plan de implementación para nuevas características debe incluir un plan de pruebas integrado. El agente debe listar qué pruebas manuales o puntos de chequeo se deben verificar en los módulos adyacentes para asegurar que sigan funcionando correctamente tras la integración.
+
+---
+
+## Environment Limitations & Tooling Issues
+
+**CRITICAL (Added: 2026-04-06T05:45Z):**
+- **Sandboxing Error on Windows (`SafeToAutoRun` in Antigravity):** Do NOT run terminal commands using `SafeToAutoRun=true` for internal workspace checks or git maneuvers on this local Windows environment if they fail with `"failed to set up sandbox: sandboxing is not supported on Windows"`. Use `SafeToAutoRun=false` and request user permission via UI, or explain what the user should execute. Using it continuously triggers a 6-hour system suspension.
+
+---
+
+## Branching & GitFlow
+
+Full workflow defined in `.agents/workflows/gitflow-process.md` (slash command: `/gitflow-process`).
+
+**Quick reference:**
+
+1. **Estado Inicial**: Partir desde `develop`.
+2. **Rama de Feature**: `git checkout -b feature/nombre-descriptivo develop`.
+3. **Desarrollo y Validación**: 
+   - Implementar cambios.
+   - **Solicitar aprobación de éxito/fallo** al usuario y documentar en `PLAN_EJECUCION.md`.
+4. **Commit**: `git add . && git commit -m "feat: descripción (via AI Agent)"`.
+5. **Knowledge Feed**: Transformar scripts temporales e investigación en documentos permanentes en `docs/research/` o `docs/knowledge/` antes de limpiar.
+6. **Project Map**: Actualizar `docs/PROJECT_MAP.md`.
+7. **Merge**: `git checkout develop && git merge --no-ff feature/nombre-descriptivo`.
+8. **Archivo y Limpieza**: Mover logs de `.temp/` a `docs/logs/` y eliminar la rama.
+
+**Important:** Always consult `docs/STANDARDS.md` before closing a task.
+
+---
+
+## Documentation Protocol
+
+To avoid massive scans and facilitate onboarding of new agents or conversations:
+
+- **Master File:** Keep `docs/PROJECT_MAP.md` updated at all times.
+- **Discovery Protocol:** When reading a new file or modifying it, the agent must update the file's responsibility, flow, and relationship with other modules in this map.
+- **Content:** General overview, stack, folder/file dictionary, and critical data flows.
+- **Preservation Rule:** NEVER delete sections that have not been touched by the current task. Stored knowledge must persist for future agents and sessions.
+
+---
+
+## Code Style
+
+### Developer Profile
+
+- **Specialty:** Backend Developer (Node.js/TypeScript, Python, C++).
+- **Hard Restriction:** Do NOT use Java under any circumstance.
+- **Frontend Technologies:** React, Next.js (use `useState` and standard hooks).
+
+### Development Principles (Must-Follow)
+
+1. **Safe Hands:** Always prioritize solving real problems and stability over accumulating unnecessary complexity.
+2. **Quantifiable Impact:** Every new function or service must include clear error handling and, where possible, metrics or logs to measure success. Describe results, not tasks.
+3. **Ownership Verbs:** In comments and documentation, use leadership language: "Designed", "Implemented", "Launched".
+4. **Skill Translation:** Adapt technical terminology to business priorities. Code must be clean but results-oriented.
+5. **Risk Mitigation:** If a solution involves a drastic change or potential performance issue, mention it before implementing.
+
+### TypeScript / Next.js
+
+- Strong typing — avoid `any`.
+- Use `formatPrice`, `formatAmount`, `formatPercentage` from `@/lib/utils`. Never use `.toFixed()` ad-hoc.
+- Modular, clean components.
+
+### Python / FastAPI
+
+- Follow PEP 8 standards.
+- Respect "Buy before Sell" principle and exact quantity matching in trade logic.
+- PnL calculation must always subtract all commissions.
+- After modifying the local API, wait 5–10 seconds before running tests (allow runtime reload).
+
+---
+
+## Security
+
+- API credentials in `.env` files (never in source code).
+- CORS configured for the specific frontend origin.
+- Rate limiting on all Binance API requests.
+- Data validation with Pydantic models.
+
+---
+
+## Database
+
+- **SQLite** by default (easy development); PostgreSQL-ready for production.
+- `fills` table: raw Binance executions.
+- `trades` table: matched operations with PnL.
+- Automatic migrations via SQLModel.
+
+---
+
+*Last updated: 2026-04-16 | Maintained by AI agents — update incrementally, never overwrite whole sections.*

@@ -34,3 +34,13 @@ __pycache__/
 # OS
 .DS_Store
 Thumbs.db
+
+# Temporales y Logs
+.temp/
+*.log
+*.db
+*.db-*
+*.sqlite
+*.sqlite-*
+binance_tracker.db
+binance_tracker_v3.db

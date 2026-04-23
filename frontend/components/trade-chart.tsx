@@ -1,6 +1,7 @@
 'use client'
 
 import { Trade } from '@/lib/api'
+import { formatPrice } from '@/lib/utils'
 import {
   LineChart,
   Line,
@@ -42,11 +43,11 @@ export function TradeChart({ trades }: TradeChartProps) {
         pnl: trade.pnl_net,
       },
       {
-        time: format(new Date(trade.exit_datetime), 'MM/dd HH:mm'),
-        timestamp: new Date(trade.exit_datetime).getTime(),
-        price: trade.exit_price,
+        time: trade.exit_datetime ? format(new Date(trade.exit_datetime), 'MM/dd HH:mm') : 'Open',
+        timestamp: trade.exit_datetime ? new Date(trade.exit_datetime).getTime() : Date.now(),
+        price: trade.exit_price || trade.entry_price,
         type: 'exit',
-        side: trade.exit_side,
+        side: trade.exit_side || trade.entry_side,
         pnl: trade.pnl_net,
       },
     ])
@@ -54,7 +55,7 @@ export function TradeChart({ trades }: TradeChartProps) {
     .sort((a, b) => a.timestamp - b.timestamp)
 
   // Calculate price range for better visualization
-  const prices = trades.flatMap((t) => [t.entry_price, t.exit_price])
+  const prices = trades.flatMap((t) => [t.entry_price, t.exit_price ?? t.entry_price])
   const minPrice = Math.min(...prices)
   const maxPrice = Math.max(...prices)
   const priceRange = maxPrice - minPrice
@@ -88,18 +89,19 @@ export function TradeChart({ trades }: TradeChartProps) {
                   <div className="bg-white dark:bg-gray-800 p-3 border border-gray-200 dark:border-gray-700 rounded-lg shadow-lg">
                     <p className="font-semibold">{data.time}</p>
                     <p className={`${data.type === 'entry' ? 'text-blue-600' : 'text-purple-600'}`}>
-                      {data.type === 'entry' ? 'Entrada' : 'Salida'}: ${data.price.toFixed(2)}
+                      {data.type === 'entry' ? 'Entrada' : 'Salida'}: {formatPrice(data.price)}
                     </p>
                     <p className="text-sm text-gray-600 dark:text-gray-400">
                       Lado: {data.side.toUpperCase()}
                     </p>
                     {data.pnl !== undefined && (
                       <p className={`text-sm font-semibold ${data.pnl >= 0 ? 'text-green-600' : 'text-red-600'}`}>
-                        PnL: ${data.pnl.toFixed(2)}
+                        PnL: {formatPrice(data.pnl)}
                       </p>
                     )}
                   </div>
                 )
+
               }
               return null
             }}

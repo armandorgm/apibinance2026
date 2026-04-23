@@ -2,7 +2,6 @@
 Script para ejecutar el servidor FastAPI.
 """
 import uvicorn
-from app.main import app
 
 if __name__ == "__main__":
     uvicorn.run(
