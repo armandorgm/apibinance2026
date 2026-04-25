@@ -204,10 +204,19 @@ class BotPipelineProcess(SQLModel, table=True):
     custom_cooldown: Optional[int] = None
     custom_threshold: Optional[float] = None
     custom_profit_pc: Optional[float] = None
-    retry_count: int = Field(default=0)
+    # Plugin Routing: identifies which service handles this process 
+    # (e.g. 'CHASE_V2', 'NATIVE_OTO', 'ADAPTIVE_OTO')
+    handler_type: str = Field(default="CHASE_V2", index=True)
     
+    # Retry tracking for Adaptive OTO
+    retry_count: int = Field(default=0)
+
+    # Identifies which service launched this process (e.g. 'REACTOR', 'SCALER_BOT', 'MANUAL')
+    originator: Optional[str] = Field(default=None, index=True)
+
     created_at: datetime = Field(default_factory=datetime.utcnow)
     updated_at: datetime = Field(default_factory=datetime.utcnow)
+
 
 
 class ExchangeLog(SQLModel, table=True):
@@ -226,11 +235,39 @@ class ExchangeLog(SQLModel, table=True):
     created_at: datetime = Field(default_factory=datetime.utcnow)
 
 
-# Database engine
+class ScalerBotConfig(SQLModel, table=True):
+    """
+    Persists the ScheduledScalerBot configuration across backend restarts.
+    One row per symbol — UPSERT semantics via symbol unique index.
+    Designed by AI Agent — 2026-04-25.
+    """
+    __tablename__ = "scaler_bot_config"
+
+    id: Optional[int] = Field(default=None, primary_key=True)
+    symbol: str = Field(index=True, unique=True)
+    is_enabled: bool = Field(default=False)
+    default_profit_pc: float = Field(default=0.005)   # Fallback when no TP found
+    interval_hours: float = Field(default=8.0)        # Configurable interval
+
+    # Runtime stats (updated each cycle)
+    cycles_executed: int = Field(default=0)
+    last_execution_at: Optional[datetime] = None
+    last_cycle_side: Optional[str] = None             # last inferred side
+    last_profit_pc_used: Optional[float] = None       # last computed profit_pc
+
+    created_at: datetime = Field(default_factory=datetime.utcnow)
+    updated_at: datetime = Field(default_factory=datetime.utcnow)
+
+
+
 engine = create_engine(
     settings.DATABASE_URL,
     connect_args={"check_same_thread": False} if "sqlite" in settings.DATABASE_URL else {},
-    echo=False
+    echo=False,
+    pool_size=50,
+    max_overflow=100,
+    pool_recycle=3600,
+    pool_pre_ping=True
 )
 
 def create_db_and_tables():

@@ -78,6 +78,45 @@ class ExchangeManager:
             })
         return self._exchange
 
+    async def _execute_with_retry(self, func, *args, **kwargs) -> Any:
+        """Helper to execute an async CCXT call with retries and exponential backoff."""
+        max_attempts = 5  # Increased from 3 for consistency with Native engine
+        last_error = None
+        
+        for attempt in range(max_attempts):
+            try:
+                return await func(*args, **kwargs)
+            except Exception as e:
+                last_error = e
+                err_str = str(e).lower()
+                
+                # Check for network-related errors that warrant a retry
+                is_network_error = any(msg in err_str for msg in [
+                    "10054", "reset", "timeout", "closed", 
+                    "connection error", "broken pipe", "econnreset", "request timeout"
+                ])
+                
+                if is_network_error and attempt < max_attempts - 1:
+                    logger.warning(f"[EXCHANGE] Network issue detected (attempt {attempt+1}/{max_attempts}): {e}. Retrying...")
+                    
+                    # If we've failed significantly, try to reset the session
+                    if attempt >= 2:
+                        logger.info("[EXCHANGE] Persistent connection issues. Resetting CCXT sessions...")
+                        await self.close() # This sets self._exchange and self._pro_exchange to None
+                    
+                    await asyncio.sleep(attempt + 1)
+                    continue
+                
+                # Business logic errors or other fatal errors should be raised immediately
+                if not is_network_error:
+                    logger.error(f"[EXCHANGE] Fatal CCXT error (non-retryable): {e}")
+                else:
+                    logger.error(f"[EXCHANGE] Exhausted {max_attempts} retries for network error: {e}")
+                raise e
+        
+        raise last_error
+
+
     async def _rate_limit(self):
         now = time.time()
         elapsed = now - self._last_request_time
@@ -97,7 +136,7 @@ class ExchangeManager:
             exchange = await self.get_exchange()
             # Ensure markets are loaded (resilient against multiple calls)
             if not exchange.markets:
-                await exchange.load_markets()
+                await self._execute_with_retry(exchange.load_markets)
             
             # 1. Direct match in markets (keys use standard format)
             if symbol in exchange.markets: return symbol
@@ -130,7 +169,7 @@ class ExchangeManager:
         try:
             exchange = await self.get_exchange()
             if not exchange.markets:
-                await exchange.load_markets()
+                await self._execute_with_retry(exchange.load_markets)
             
             # 1. Direct lookup if it's already a standard symbol in our markets
             if symbol in exchange.markets:
@@ -148,7 +187,7 @@ class ExchangeManager:
         exchange = await self.get_exchange()
         norm_sym = await self.normalize_symbol(symbol)
         try:
-            orders = await exchange.fetch_orders(norm_sym, since=since, limit=limit)
+            orders = await self._execute_with_retry(exchange.fetch_orders, norm_sym, since=since, limit=limit)
             return orders
         except Exception as e:
             if "market symbol" not in str(e).lower():
@@ -160,7 +199,7 @@ class ExchangeManager:
         exchange = await self.get_exchange()
         norm_sym = await self.normalize_symbol(symbol)
         try:
-            return await exchange.fetch_my_trades(norm_sym, since=since, limit=limit)
+            return await self._execute_with_retry(exchange.fetch_my_trades, norm_sym, since=since, limit=limit)
         except Exception as e:
             logger.error(f"[EXCHANGE] Error in fetch_my_trades for {norm_sym}: {e}")
             return []
@@ -169,7 +208,7 @@ class ExchangeManager:
         await self._rate_limit()
         exchange = await self.get_exchange()
         try:
-            res = await exchange.fetch_balance()
+            res = await self._execute_with_retry(exchange.fetch_balance)
             logger.debug(f"[EXCHANGE] fetch_balance | Assets: {list(res.get('total', {}).keys())}")
             return res
         except Exception as e:
@@ -181,7 +220,7 @@ class ExchangeManager:
         exchange = await self.get_exchange()
         norm_sym = await self.normalize_symbol(symbol) if symbol else None
         try:
-            positions = await exchange.fetch_positions(symbols=[norm_sym] if norm_sym else None)
+            positions = await self._execute_with_retry(exchange.fetch_positions, symbols=[norm_sym] if norm_sym else None)
             return [p for p in positions if float(p.get('contracts', 0)) != 0]
         except Exception as e:
             logger.error(f"[EXCHANGE] Error fetching positions: {e}")
@@ -197,7 +236,7 @@ class ExchangeManager:
         if net_pos == 0: return None
 
         exchange = await self.get_exchange()
-        trades = await exchange.fetch_my_trades(norm_sym, limit=1000)
+        trades = await self._execute_with_retry(exchange.fetch_my_trades, norm_sym, limit=1000)
         trades.sort(key=lambda x: x.get('timestamp', 0), reverse=True)
 
         running_qty = net_pos
@@ -222,7 +261,7 @@ class ExchangeManager:
         
         params = {}
         if symbol:
-            await exchange.load_markets()
+            await self._execute_with_retry(exchange.load_markets)
             norm_sym = await self.normalize_symbol(symbol)
             market = exchange.market(norm_sym)
             params['symbol'] = market['id'] # e.g. 1000PEPEUSDC
@@ -230,7 +269,7 @@ class ExchangeManager:
         try:
             # Manual request for compatibility with CCXT 4.1.94
             # Endpoint: GET /fapi/v1/openAlgoOrders
-            res = await exchange.request('openAlgoOrders', 'fapiPrivate', 'GET', params)
+            res = await self._execute_with_retry(exchange.request, 'openAlgoOrders', 'fapiPrivate', 'GET', params)
             raw_orders = res if isinstance(res, list) else res.get('orders', res)
             
             # Tag with _source for OrderFactory compatibility
@@ -254,7 +293,7 @@ class ExchangeManager:
 
         try:
             # 1. Standard orders
-            t_std = exchange.fetch_open_orders(norm_sym)
+            t_std = self._execute_with_retry(exchange.fetch_open_orders, norm_sym)
             # 2. Algo orders (TP/SL) 
             t_algo = self.fetch_algo_open_orders(symbol)
 
@@ -280,13 +319,13 @@ class ExchangeManager:
     async def fetch_ticker(self, symbol: str) -> Dict[str, Any]:
         norm_sym = await self.normalize_symbol(symbol)
         exchange = await self.get_exchange()
-        return await exchange.fetch_ticker(norm_sym)
+        return await self._execute_with_retry(exchange.fetch_ticker, norm_sym)
 
     async def get_tick_size(self, symbol: str) -> float:
         """Returns the minimum price increment (tickSize) for a symbol."""
         norm_sym = await self.normalize_symbol(symbol)
         exchange = await self.get_exchange()
-        await exchange.load_markets()
+        await self._execute_with_retry(exchange.load_markets)
         market = exchange.markets.get(norm_sym, {})
         # CCXT Binance Future format usually stores the tickSize directly in precision
         return market.get('precision', {}).get('price', 0.0001)
@@ -294,7 +333,7 @@ class ExchangeManager:
     async def price_to_precision(self, symbol: str, price: float) -> str:
         norm_sym = await self.normalize_symbol(symbol)
         exchange = await self.get_exchange()
-        await exchange.load_markets()
+        await self._execute_with_retry(exchange.load_markets)
         return exchange.price_to_precision(norm_sym, price)
 
     async def get_safe_min_notional_qty(self, symbol: str, price: float) -> float:
@@ -304,7 +343,7 @@ class ExchangeManager:
         """
         norm_sym = await self.normalize_symbol(symbol)
         exchange = await self.get_exchange()
-        await exchange.load_markets()
+        await self._execute_with_retry(exchange.load_markets)
         market = exchange.markets.get(norm_sym, {})
         
         # Extraer límites de mercado de CCXT (Manejo robusto de diccionarios)
@@ -315,6 +354,9 @@ class ExchangeManager:
         
         # En Binance Futures via CCXT, 'precision'['amount'] suele contener el stepSize en formato numérico (ej. 0.001)
         step_size = float(precision_info.get('amount', 0.001))
+        if step_size <= 0:
+            step_size = 0.001 # Fallback to standard step size
+            
         lot_size_min_qty = float(amount_limits.get('min', step_size))
         
         # Obtener el MIN_NOTIONAL dinámico, si no existe asume 5.0 por seguridad estándar
@@ -341,18 +383,18 @@ class ExchangeManager:
     async def amount_to_precision(self, symbol: str, amount: float) -> str:
         norm_sym = await self.normalize_symbol(symbol)
         exchange = await self.get_exchange()
-        await exchange.load_markets()
+        await self._execute_with_retry(exchange.load_markets)
         return exchange.amount_to_precision(norm_sym, amount)
 
     async def fetch_order_raw(self, symbol: str, order_id: str) -> Dict[str, Any]:
         norm_sym = await self.normalize_symbol(symbol)
         exchange = await self.get_exchange()
-        return await exchange.fetch_order(order_id, norm_sym)
+        return await self._execute_with_retry(exchange.fetch_order, order_id, norm_sym)
 
     async def create_order(self, symbol: str, order_type: str, side: str, amount: str, price: str = None, params: Dict[str, Any] = None) -> Dict[str, Any]:
         norm_sym = await self.normalize_symbol(symbol)
         exchange = await self.get_exchange()
-        return await exchange.create_order(norm_sym, order_type, side, float(amount), float(price) if price else None, params or {})
+        return await self._execute_with_retry(exchange.create_order, norm_sym, order_type, side, float(amount), float(price) if price else None, params or {})
 
     async def close(self):
         """Standardized cleanup for CCXT instances and sessions (V5.9.23)."""

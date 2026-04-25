@@ -6,7 +6,7 @@ FastAPI application for automated trading dashboard.
 FastAPI main application entry point.
 Handles API routes, CORS, and application configuration.
 """
-import asyncio
+import asyncio 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from app.api.routes import router
@@ -38,6 +38,13 @@ app.include_router(router, prefix="/api")
 from app.api.chase_routes import router as chase_router
 app.include_router(chase_router, prefix="/api/chase", tags=["chase"])
 
+from app.api.reactor_routes import router as reactor_router
+app.include_router(reactor_router, prefix="/api/reactor", tags=["reactor"])
+
+from app.api.scaler_routes import router as scaler_router
+app.include_router(scaler_router)  # prefix defined inside scaler_routes: /api/scaler
+
+
 # WebSocket Notifications Endpoint
 from fastapi import WebSocket, WebSocketDisconnect
 from app.services.notification_service import notification_manager
@@ -67,6 +74,13 @@ async def startup_event():
     from app.services.bot_service import bot_instance
     if settings.BOT_ENABLED:
         asyncio.create_task(bot_instance.start())
+
+    # Restore ScheduledScalerBot state from DB (survives restarts)
+    from app.services.scheduled_scaler_bot import scheduled_scaler_bot
+    restored = await scheduled_scaler_bot.load_from_db()
+    if restored:
+        logger.info("[STARTUP] ScheduledScalerBot state restored from DB.")
+
 
 @app.on_event("shutdown")
 async def shutdown_event():

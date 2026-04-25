@@ -5,8 +5,9 @@ import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { 
   fetchTrades, syncTrades, syncHistoricalTrades, fetchStats, 
   fetchBotStatus, fetchBotLogs, startBot, stopBot, fetchBotConfig, updateBotConfig, fetchBalances,
-  fetchOpenOrders, fetchFailedOrders, fetchActivePipelines, stopPipeline, fetchUcoeCandidates, fetchUcoePreview, executeUcoeAction, fetchUcoeBulkPreview, executeUcoeBulkAction,
-  Trade, Stats, SyncResponse, BotStatus, BotSignal, BotConfig, AggregatedBalances, Order, ActivePipeline, UcoeCandidate, UcoePreview, UcoeExecuteResponse
+  fetchActivePipelines, stopPipeline, fetchUcoeCandidates, fetchUcoePreview, executeUcoeAction, fetchUcoeBulkPreview, executeUcoeBulkAction,
+  fetchScalerStatus, enableScaler, disableScaler,
+  Trade, Stats, SyncResponse, BotStatus, BotSignal, BotConfig, AggregatedBalances, Order, ActivePipeline, UcoeCandidate, UcoePreview, UcoeExecuteResponse, ScalerBotStatus
 } from '@/lib/api'
 
 export function useTrades(symbol: string, logic: string = 'fifo', sortBy: string = 'recent') {
@@ -188,4 +189,32 @@ export function useExecuteUcoeBulk() {
       queryClient.invalidateQueries({ queryKey: ['ucoe-candidates', variables.symbol] })
     },
   })
+}
+
+export function useScalerStatus() {
+  return useQuery<ScalerBotStatus>({
+    queryKey: ['scaler-status'],
+    queryFn: () => fetchScalerStatus(),
+    refetchInterval: 10000, // Refresh status every 10 seconds
+  })
+}
+
+export function useScalerControl() {
+  const queryClient = useQueryClient()
+
+  const enable = useMutation<any, Error, { symbol: string, defaultProfitPc?: number, intervalHours?: number }>({
+    mutationFn: ({ symbol, defaultProfitPc, intervalHours }) => enableScaler(symbol, defaultProfitPc, intervalHours),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['scaler-status'] })
+    },
+  })
+
+  const disable = useMutation<any, Error, void>({
+    mutationFn: () => disableScaler(),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['scaler-status'] })
+    },
+  })
+
+  return { enable, disable }
 }

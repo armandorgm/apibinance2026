@@ -1,6 +1,7 @@
 import asyncio
 import json
 import traceback
+import time
 from typing import Dict, Any, Optional, Set
 from app.core.config import settings
 from binance.websocket.um_futures.websocket_client import UMFuturesWebsocketClient
@@ -17,6 +18,8 @@ class StreamManager:
         self.user_client: Optional[UMFuturesWebsocketClient] = None
         self.subscribed_symbols: Set[str] = set()
         self.is_running = False
+        self._last_market_message_time = 0
+        self._keep_alive_task: Optional[asyncio.Task] = None
 
     async def start(self):
         """Starts the consolidated native streaming clients."""
@@ -47,11 +50,38 @@ class StreamManager:
             listen_key = res.get("listenKey")
             
             if listen_key:
-                self.user_client = UMFuturesWebsocketClient(on_message=self._handle_user_message)
+                self.user_client = UMFuturesWebsocketClient(
+                    on_message=self._handle_user_message,
+                    on_error=lambda _, e: logger.error(f"[STREAM] User WS Error: {e}")
+                )
                 self.user_client.user_data(listen_key=listen_key)
-                logger.info("[STREAM] User Data Stream active with listenKey.")
+                logger.info(f"[STREAM] User Data Stream active (listenKey: {listen_key[:5]}...)")
+                
+                # Start Keep-Alive task (V5.9.36)
+                if self._keep_alive_task:
+                    self._keep_alive_task.cancel()
+                self._keep_alive_task = asyncio.create_task(self._keep_alive_user_stream(listen_key))
         except Exception as e:
             logger.error(f"[STREAM] Failed to start User Data Stream: {e}")
+
+    async def _keep_alive_user_stream(self, listen_key: str):
+        """Periodically refreshes the listenKey (every 30 mins) to prevent expiration."""
+        try:
+            while self.is_running:
+                await asyncio.sleep(1800) # 30 minutes
+                if not self.is_running: break
+                
+                from app.core.binance_native import binance_native
+                loop = asyncio.get_event_loop()
+                await loop.run_in_executor(None, binance_native.client.renew_listen_key, listen_key)
+                logger.info("[STREAM] User Stream listenKey refreshed successfully.")
+        except Exception as e:
+            logger.error(f"[STREAM] listenKey refresh failed: {e}")
+            # If refresh fails, we might need to restart the entire user stream
+            if self.is_running:
+                logger.warning("[STREAM] Attempting User Stream restart...")
+                await asyncio.sleep(5)
+                await self._start_user_stream_native()
 
     async def stop(self):
         self.is_running = False
@@ -61,6 +91,9 @@ class StreamManager:
 
     async def subscribe(self, symbol: str):
         """Subscribe to high-frequency bookTicker for a symbol."""
+        from app.core.exchange import exchange_manager
+        symbol = await exchange_manager.normalize_symbol(symbol)
+        
         if symbol not in self.subscribed_symbols:
             self.subscribed_symbols.add(symbol)
             if self.market_client:
@@ -72,6 +105,9 @@ class StreamManager:
 
     async def unsubscribe(self, symbol: str):
         """Unsubscribe from bookTicker (release resources)."""
+        from app.core.exchange import exchange_manager
+        symbol = await exchange_manager.normalize_symbol(symbol)
+        
         if symbol in self.subscribed_symbols:
             self.subscribed_symbols.remove(symbol)
             logger.info(f"[STREAM] Unregistered {symbol} from tracking.")
@@ -98,8 +134,11 @@ class StreamManager:
                     return
 
                 symbols_to_resub = {p.symbol for p in active_procs}
+                from app.services.bot_service import bot_instance
                 for sym in symbols_to_resub:
                     await self.subscribe(sym)
+                    # Sync with in-memory registry (V5.9.35)
+                    bot_instance.engine.register_chase(sym)
                 
                 print(f"[STREAM] Proactive Hard-Sync: checking {len(active_procs)} processes.")
                 
@@ -137,6 +176,7 @@ class StreamManager:
 
     def _handle_market_message(self, _, message):
         """Process real-time bid/ask from Binance. Dual-Key broadcast (V5.9.27)."""
+        self._last_market_message_time = time.time()
         try:
             # Handle both string and pre-parsed dict from binance connector
             data = json.loads(message) if isinstance(message, str) else message

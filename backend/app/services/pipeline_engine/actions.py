@@ -125,6 +125,7 @@ class AdaptiveOTOScalingAction(BaseAction):
                         retry_count=1 if initial_rejection else 0, # Start count if we already failed once
                         status="CHASING",
                         sub_status="WAITING_FILL" if not initial_rejection else "RECOVERING",
+                        handler_type="ADAPTIVE_OTO",
                         custom_cooldown=params.get("cooldown"),
                         custom_threshold=params.get("threshold")
                     )

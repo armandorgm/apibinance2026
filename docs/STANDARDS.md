@@ -54,7 +54,16 @@ Para garantizar la máxima precisión y compatibilidad con agentes de IA, el ent
 > [!IMPORTANT]
 > El incumplimiento de estas reglas, especialmente la de **no perder conocimiento** en `PROJECT_MAP.md`, se considera un fallo crítico de ejecución.
 
-## 🧪 7. Ejecución de Pruebas Unificadas
+## 🧪 7. Verificación Previa de Servicios (Preflight Check)
+Antes de ejecutar cualquier prueba técnica o de integración, es **OBLIGATORIO** verificar que tanto el frontend como el backend estén en estado `RUNNING`.
+
+1. **Procedimiento Automático**: Ejecutar el script de verificación:
+   ```powershell
+   & 'f:/apibinance2026/.venv/Scripts/python.exe' scripts/preflight_check.py
+   ```
+2. **Criterio de Aceptación**: Si el script falla, el agente o desarrollador NO debe proceder con las pruebas hasta que los servicios sean reiniciados.
+
+## 🧪 8. Ejecución de Pruebas Unificadas
 Para garantizar que las pruebas se ejecuten con todas las dependencias necesarias (`pytest`, `sqlmodel`, etc.), es **obligatorio** utilizar el intérprete del entorno virtual (`.venv`).
 
 ### ❌ Forma INCORRECTA (Usa el Python del sistema, faltarán módulos):

@@ -49,8 +49,12 @@ class ChaseV2Service:
             
         return True
 
-    async def init_chase(self, symbol: str, side: str, amount: float, profit_pc: float = 0.005, pipeline_id: int = 0) -> Dict[str, Any]:
+    async def init_chase(self, symbol: str, side: str, amount: float, profit_pc: float = 0.005, pipeline_id: int = 0, originator: str = "MANUAL") -> Dict[str, Any]:
         try:
+            # V5.9.38: Proactive normalization to ensure registry match (DIAS Robustness)
+            symbol = await exchange_manager.normalize_symbol(symbol)
+            
+            print(f"[DEBUG] Subscribing to {symbol}...")
             await stream_manager.subscribe(symbol)
             
             price = None
@@ -63,36 +67,58 @@ class ChaseV2Service:
             
             if not price:
                 logger.warning(f"[CHASE V2 SERVICE] Stream price missing for {symbol}, falling back to REST")
+                print(f"[DEBUG] Falling back to REST fetch_ticker...")
                 ticker = await exchange_manager.fetch_ticker(symbol)
                 price = ticker.get('ask' if side == 'buy' else 'bid') or ticker.get('last')
             
             if not price:
                 return {"success": False, "error": "Cannot fetch execution price"}
 
+            print(f"[DEBUG] Getting market ID...")
             market_id = await exchange_manager.get_market_id(symbol)
             entry_order = None
             
+            # Fetch tick_size once — needed for maker-safe price adjustment
+            tick_size = await exchange_manager.get_tick_size(symbol)
+
             for attempt in range(20):
+                # Always fetch the freshest book price on each attempt
                 ticker = exchange_manager.get_ticker(symbol)
                 if ticker:
-                    price = ticker.get('ask' if side == 'buy' else 'bid')
-                
+                    bid = ticker.get("bid")
+                    ask = ticker.get("ask")
+                    if side == "buy" and bid:
+                        # Place 1 tick above bid to be first in maker queue
+                        raw_price = bid + tick_size
+                        if raw_price >= ask:
+                            raw_price = bid   # fallback: sit at bid to avoid crossing
+                        price = raw_price
+                    elif side == "sell" and ask:
+                        # Place 1 tick below ask to be first in maker queue
+                        raw_price = ask - tick_size
+                        if raw_price <= bid:
+                            raw_price = ask   # fallback: sit at ask
+                        price = raw_price
+
                 if not price:
-                    await asyncio.sleep(0.2)
+                    await asyncio.sleep(0.3)
                     continue
 
                 qty = amount / price
                 price_str = await exchange_manager.price_to_precision(symbol, price)
-                
+
                 min_safe_qty = await exchange_manager.get_safe_min_notional_qty(symbol, price)
                 final_qty = max(qty, min_safe_qty)
+                logger.info(f"[CHASE V2] Qty Debug: amount={amount}, price={price}, qty={qty}, min_safe={min_safe_qty}, final={final_qty}")
                 qty_str = await exchange_manager.amount_to_precision(symbol, final_qty)
-                
+
                 native_params = {
+                    "recvWindow": 10000,
                     "timeInForce": "GTX",
                     "newClientOrderId": f"V2_ENTRY_{int(datetime.utcnow().timestamp())}"
                 }
-                
+
+                print(f"[DEBUG] Calling binance_native.create_order for {market_id}...")
                 res = await binance_native.create_order(
                     symbol=market_id,
                     side=side,
@@ -101,16 +127,21 @@ class ChaseV2Service:
                     price=price_str,
                     params=native_params
                 )
-                
+
                 if res.get("success"):
                     entry_order = res["result"]
-                    logger.info(f"[CHASE V2 SERVICE] Entry placed successfully as Maker on attempt {attempt+1}")
+                    logger.info(f"[CHASE V2 SERVICE] Entry placed as Maker on attempt {attempt+1} at {price_str}")
                     break
-                
+
                 error = str(res.get("error", ""))
                 if "-5022" in error:
-                    logger.info(f"[CHASE V2 SERVICE] Post-Only rejection. Re-chasing {symbol} at {price}...")
-                    await asyncio.sleep(0.2)
+                    # Exponential backoff capped at 2s — gives the book time to shift
+                    backoff = min(0.2 * (1.5 ** attempt), 2.0)
+                    logger.info(
+                        f"[CHASE V2 SERVICE] Post-Only rejection #{attempt+1}. "
+                        f"Retrying in {backoff:.2f}s with fresh price..."
+                    )
+                    await asyncio.sleep(backoff)
                     continue
                 else:
                     return {"success": False, "error": f"Execution failed: {error}"}
@@ -130,11 +161,16 @@ class ChaseV2Service:
                     last_order_price=price,
                     status="CHASING",
                     sub_status="INIT_NATIVE",
-                    originator="CHASE_V2_SERVICE",
+                    handler_type="CHASE_V2",
+                    originator=originator,
                     custom_profit_pc=profit_pc
                 )
                 session.add(process)
                 session.commit()
+                
+                # Register in bot engine registry (V5.9.35)
+                from app.services.bot_service import bot_instance
+                bot_instance.engine.register_chase(symbol)
                 
                 logger.info(f"[CHASE V2 SERVICE] Started for {symbol} at {price} with orderId {order_id}")
                 return {"success": True, "process_id": process.id, "order_id": order_id}
@@ -145,18 +181,21 @@ class ChaseV2Service:
 
     async def handle_tick(self, process: BotPipelineProcess, current_price: float, session):
         try:
+            # Ensure symbol is normalized for ticker registry lookup
+            symbol = await exchange_manager.normalize_symbol(process.symbol)
+            
             if not self.should_update(process, current_price):
                 return
 
-            market_id = await exchange_manager.get_market_id(process.symbol)
+            market_id = await exchange_manager.get_market_id(symbol)
             
-            ticker = exchange_manager.get_ticker(process.symbol)
+            ticker = exchange_manager.get_ticker(symbol)
             if not ticker:
                 return
                 
             bid = ticker.get("bid", current_price)
             ask = ticker.get("ask", current_price)
-            tick_size = await exchange_manager.get_tick_size(process.symbol)
+            tick_size = await exchange_manager.get_tick_size(symbol)
             
             side = (process.side or "buy").lower()
             if side == "buy":
@@ -207,8 +246,9 @@ class ChaseV2Service:
                 session.commit()
             else:
                 error = str(res.get('error', '')).lower()
-                if "filled" in error or "-2012" in error:
-                    logger.info(f"[CHASE V2 SERVICE] Order {process.entry_order_id} filled detected via error. Triggering handle_fill.")
+                # 1. Detectar si la orden ya se llenó o ya no existe (asumimos fill)
+                if "filled" in error or "-2012" in error or "-2013" in error:
+                    logger.info(f"[CHASE V2] Order {process.entry_order_id} filled or not found (-2013) during PUT. Triggering handle_fill.")
                     await self.handle_fill(process, session)
                 elif "post-only" in error or "-5022" in error:
                     logger.warning(f"[CHASE V2 SERVICE] Post-Only constraint failed (-5022). Forcing RECOVERING state.")
@@ -259,7 +299,14 @@ class ChaseV2Service:
                 process.finished_at = datetime.utcnow()
                 session.commit()
                 logger.info(f"[CHASE V2 SERVICE] TP placed successfully for {symbol}")
+                
+                from app.services.bot_service import bot_instance
+                bot_instance.engine.unregister_chase(symbol)
                 stream_manager.unsubscribe(symbol)
+
+                # ── Bot B hook: emit to CloseFillReactor (non-blocking) ──
+                from app.services.close_fill_reactor import close_fill_reactor
+                asyncio.create_task(close_fill_reactor.on_position_closed(process))
             else:
                 error = res.get("error", "Unknown error")
                 logger.error(f"[CHASE V2 SERVICE] TP placement failed: {error}")
@@ -278,9 +325,12 @@ class ChaseV2Service:
             await self.handle_fill(process, session, executed_qty=executed_qty)
         elif status in ['canceled', 'expired']:
             logger.warning(f"[CHASE V2 SERVICE] Order {process.entry_order_id} was {status} externally. Aborting.")
-            process.status = "ABORTED"
             process.sub_status = f"EXTERNAL_{status.upper()}"
             session.commit()
+            
+            from app.services.bot_service import bot_instance
+            bot_instance.engine.unregister_chase(process.symbol)
+            stream_manager.unsubscribe(process.symbol)
 
     async def stop_chase(self, process_id: int) -> bool:
         with get_session_direct() as session:
@@ -300,6 +350,8 @@ class ChaseV2Service:
                         logger.error(f"[CHASE V2 SERVICE] Failed to cancel order: {e}")
                 
                 session.commit()
+                from app.services.bot_service import bot_instance
+                bot_instance.engine.unregister_chase(process.symbol)
                 stream_manager.unsubscribe(process.symbol)
                 return True
             return False

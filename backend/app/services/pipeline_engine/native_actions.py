@@ -119,6 +119,7 @@ class NativeOTOScalingAction(BaseAction):
                     last_order_price=price,
                     status="CHASING",
                     sub_status="INIT_NATIVE",
+                    handler_type="NATIVE_OTO",
                     originator="CHASE_V2",
                     custom_profit_pc=float(context_params.get("profit_pc") or params.get("profit_pc", 0.005))
                 )
@@ -126,10 +127,12 @@ class NativeOTOScalingAction(BaseAction):
                 session.commit()
                 
                 # Subscribe stream
-                from app.core.stream_service import stream_manager
-                await stream_manager.subscribe(symbol)
-                
                 logger.info(f"[CHASE V2] Started for {symbol} at {price} with orderId {order_id}")
+                
+                # Register in bot engine registry (V5.9.35)
+                from app.services.bot_service import bot_instance
+                bot_instance.engine.register_chase(symbol)
+                
                 return {"success": True, "process_id": process.id, "order_id": order_id}
 
         except Exception as e:
@@ -186,9 +189,9 @@ class NativeOTOScalingAction(BaseAction):
                 session.commit()
             else:
                 error = str(res.get('error', '')).lower()
-                # 1. Detectar si la orden ya se llenó
-                if "filled" in error or "-2012" in error:
-                    logger.info(f"[CHASE V2] Order {process.entry_order_id} filled detected via PUT error. Triggering handle_fill.")
+                # 1. Detectar si la orden ya se llenó o no existe (asumimos fill)
+                if "filled" in error or "-2012" in error or "-2013" in error:
+                    logger.info(f"[CHASE V2] Order {process.entry_order_id} filled or not found (-2013) during PUT. Triggering handle_fill.")
                     await NativeOTOScalingAction.handle_fill(process, session)
                 # 2. Detectar Violación Post-Only (Rechazo del Maker)
                 elif "post-only" in error or "-5022" in error:
@@ -254,6 +257,9 @@ class NativeOTOScalingAction(BaseAction):
                 session.commit()
                 logger.info(f"[CHASE V2] TP placed successfully for {symbol}")
                 
+                from app.services.bot_service import bot_instance
+                bot_instance.engine.unregister_chase(symbol)
+                
                 from app.core.stream_service import stream_manager
                 stream_manager.unsubscribe(symbol)
             else:
@@ -277,6 +283,11 @@ class NativeOTOScalingAction(BaseAction):
             await NativeOTOScalingAction.handle_fill(process, session, executed_qty=executed_qty)
         elif status in ['canceled', 'expired']:
             logger.warning(f"[CHASE V2] Order {process.entry_order_id} was {status} externally. Aborting.")
-            process.status = "ABORTED"
             process.sub_status = f"EXTERNAL_{status.upper()}"
             session.commit()
+            
+            from app.services.bot_service import bot_instance
+            bot_instance.engine.unregister_chase(process.symbol)
+            
+            from app.core.stream_service import stream_manager
+            stream_manager.unsubscribe(process.symbol)

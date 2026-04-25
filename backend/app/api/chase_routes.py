@@ -4,6 +4,7 @@ from typing import Dict, Any, List, Optional
 from app.db.database import get_session, BotPipelineProcess
 from app.services.chase_v2_service import chase_v2_service
 from app.core.logger import logger
+from app.core.exchange import exchange_manager
 from sqlalchemy.orm import Session
 
 router = APIRouter()
@@ -22,19 +23,28 @@ class ChaseStopRequest(BaseModel):
 async def init_chase(req: ChaseInitRequest):
     """Starts the autonomous Chase V2 process."""
     try:
+        # Normalize symbol at API boundary so the DB always stores CCXT format
+        # (e.g. "1000PEPEUSDC" → "1000PEPE/USDC:USDC") matching StrategyEngine queries.
+        normalized_symbol = await exchange_manager.normalize_symbol(req.symbol)
         res = await chase_v2_service.init_chase(
-            symbol=req.symbol,
+            symbol=normalized_symbol,
             side=req.side.lower(),
             amount=req.amount,
             profit_pc=req.profit_pc,
             pipeline_id=req.pipeline_id
         )
         if not res.get("success"):
-            raise HTTPException(status_code=400, detail=res.get("error", "Failed to start Chase V2"))
+            # Explicitly raise 400 for business logic/Binance errors
+            error_msg = res.get("error", "Failed to start Chase V2")
+            logger.warning(f"[API] Chase init failed: {error_msg}")
+            raise HTTPException(status_code=400, detail=error_msg)
         return res
+    except HTTPException:
+        # Re-raise FastAPI HTTPExceptions so they aren't caught by the general Exception block
+        raise
     except Exception as e:
-        logger.error(f"[API] Error in init_chase: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+        logger.error(f"[API] Unexpected error in init_chase: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Internal Server Error: {str(e)}")
 
 @router.post("/stop", response_model=Dict[str, Any])
 async def stop_chase(req: ChaseStopRequest):

@@ -6,6 +6,7 @@ import { format } from 'date-fns'
 import { clsx } from 'clsx'
 import { ActivePipelines } from './active-pipelines'
 import { ChaseV2Widget } from './chase-v2-widget'
+import { ScalerBotCard } from './scaler-bot-card'
 
 interface BotMonitorProps {
   symbol: string
@@ -76,8 +77,13 @@ export function BotMonitor({ symbol }: BotMonitorProps) {
         <div className="absolute -right-4 -bottom-4 w-24 h-24 bg-gradient-to-br from-indigo-500/10 to-purple-500/10 blur-2xl rounded-full" />
       </div>
 
+      {/* Bot C Scaler Card */}
+      <div className="lg:col-span-1">
+        <ScalerBotCard symbol={symbol} />
+      </div>
+
       {/* Signal Logs Section */}
-      <div className="lg:col-span-2 bg-white dark:bg-gray-800 rounded-2xl shadow-xl p-6 border border-gray-100 dark:border-gray-700 flex flex-col min-h-[400px]">
+      <div className="lg:col-span-1 bg-white dark:bg-gray-800 rounded-2xl shadow-xl p-6 border border-gray-100 dark:border-gray-700 flex flex-col min-h-[400px]">
         <h3 className="text-lg font-bold text-gray-900 dark:text-white mb-6 flex items-center gap-2">
            <span className="p-2 bg-amber-100 dark:bg-amber-900/30 rounded-lg text-amber-600 dark:text-amber-400">
             ⚡

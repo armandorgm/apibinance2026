@@ -263,6 +263,18 @@ export interface UcoeExecuteResponse {
   is_bulk?: boolean
 }
 
+export interface ScalerBotStatus {
+  is_enabled: boolean
+  symbol: string | null
+  default_profit_pc: number
+  interval_hours: number
+  loop_running: boolean
+  cycles_executed?: number
+  last_execution_at?: string | null
+  last_cycle_side?: string | null
+  last_profit_pc_used?: number | null
+}
+
 export async function fetchTrades(symbol: string, logic: string = 'fifo', sortBy: string = 'recent'): Promise<Trade[]> {
   const response = await fetch(`${API_BASE_URL}/api/trades/history?symbol=${encodeURIComponent(symbol)}&logic=${encodeURIComponent(logic)}&sort_by=${encodeURIComponent(sortBy)}`)
   
@@ -595,5 +607,41 @@ export async function watchSymbol(symbol: string): Promise<any> {
     body: JSON.stringify({ symbol }),
   })
   if (!response.ok) throw new Error('Error requesting symbol watch')
+  return response.json()
+}
+
+// --- SCALER BOT API ---
+
+export async function fetchScalerStatus(): Promise<ScalerBotStatus> {
+  const response = await fetch(`${API_BASE_URL}/api/scaler/status`)
+  if (!response.ok) throw new Error('Error fetching scaler status')
+  return response.json()
+}
+
+export async function enableScaler(symbol: string, defaultProfitPc: number = 0.005, intervalHours: number = 8.0): Promise<any> {
+  const response = await fetch(`${API_BASE_URL}/api/scaler/enable`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      symbol,
+      default_profit_pc: defaultProfitPc,
+      interval_hours: intervalHours
+    }),
+  })
+  if (!response.ok) {
+    const err = await response.json().catch(() => ({ detail: response.statusText }))
+    throw new Error(err.detail || 'Error enabling scaler')
+  }
+  return response.json()
+}
+
+export async function disableScaler(): Promise<any> {
+  const response = await fetch(`${API_BASE_URL}/api/scaler/disable`, {
+    method: 'POST',
+  })
+  if (!response.ok) {
+    const err = await response.json().catch(() => ({ detail: response.statusText }))
+    throw new Error(err.detail || 'Error disabling scaler')
+  }
   return response.json()
 }
