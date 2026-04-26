@@ -25,6 +25,13 @@ class NativeOTOScalingAction(BaseAction):
             amount = params.get("amount", 5.0)
             profit_pc = params.get("profit_pc", 0.005) # Default 0.5%
             
+            # V5.9.40: Proactive margin check (Leverage Aware)
+            margin_check = await exchange_manager.check_margin_availability(symbol, amount)
+            if not margin_check.get("available", True):
+                error_msg = f"Insufficient Margin: Need {margin_check.get('required'):.2f} {margin_check.get('asset')}, Have {margin_check.get('balance'):.2f} (Leverage: {margin_check.get('leverage')}x)"
+                logger.error(f"[CHASE V2] Aborting: {error_msg}")
+                return {"success": False, "error": error_msg}
+            
             # 1. Fetch current price from real-time stream (registry)
             from app.core.stream_service import stream_manager
             await stream_manager.subscribe(symbol) # Ensure we are watching
@@ -171,6 +178,16 @@ class NativeOTOScalingAction(BaseAction):
                     target_price = ask
                     
             # --- Formatear precisiones ---
+            # V5.9.41: Dynamic Notional Scaling
+            # Check if current quantity * new price >= 5.0 USDC
+            min_safe_qty = await exchange_manager.get_safe_min_notional_qty(process.symbol, target_price)
+            if min_safe_qty > process.amount:
+                logger.info(
+                    f"[CHASE NATIVE] Notional Scaling: Increasing qty for {process.symbol} "
+                    f"from {process.amount} to {min_safe_qty} (Price: {target_price})"
+                )
+                process.amount = min_safe_qty
+            
             price_str = await exchange_manager.price_to_precision(process.symbol, target_price)
             qty_str = await exchange_manager.amount_to_precision(process.symbol, process.amount)
             
@@ -209,6 +226,17 @@ class NativeOTOScalingAction(BaseAction):
     @staticmethod
     async def handle_fill(process, session, profit_pc: float = None, executed_qty: float = None):
         """Called when entry is filled. Places Native TP with reduceOnly. (V5.9.28)"""
+        if process.sub_status == "PLACING_TP":
+            logger.warning(f"[CHASE V2] handle_fill already in progress for {process.symbol} (ID: {process.id})")
+            return
+            
+        # Early guard to prevent re-entry (V5.9.37)
+        if process.status in ["COMPLETED", "DONE"] or process.sub_status == "PLACING_TP":
+            return
+            
+        process.sub_status = "PLACING_TP"
+        session.commit() # Atomic guard
+        
         try:
             # V5.9.28: Contract Symmetry Sync
             # If we have the real executed qty from stream, use it and persist it.
@@ -261,7 +289,7 @@ class NativeOTOScalingAction(BaseAction):
                 bot_instance.engine.unregister_chase(symbol)
                 
                 from app.core.stream_service import stream_manager
-                stream_manager.unsubscribe(symbol)
+                await stream_manager.unsubscribe(symbol)
             else:
                 error = res.get("error", "Unknown error")
                 logger.error(f"[CHASE V2] TP placement failed: {error}")
@@ -290,4 +318,4 @@ class NativeOTOScalingAction(BaseAction):
             bot_instance.engine.unregister_chase(process.symbol)
             
             from app.core.stream_service import stream_manager
-            stream_manager.unsubscribe(process.symbol)
+            await stream_manager.unsubscribe(process.symbol)

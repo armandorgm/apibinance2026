@@ -21,6 +21,14 @@ class BuyMinNotionalAction(BaseAction):
                 return {"success": False, "error": "Cannot fetch current price for min notional"}
                 
             notional_target = 5.05 # Slightly above $5 minimum
+            
+            # V5.9.40: Proactive margin check
+            margin_check = await exchange_manager.check_margin_availability(symbol, notional_target)
+            if not margin_check.get("available", True):
+                error_msg = f"Insufficient Margin for Min Notional: Have {margin_check.get('balance'):.2f} {margin_check.get('asset')}"
+                logger.error(f"[BuyMinNotional] Aborting: {error_msg}")
+                return {"success": False, "error": error_msg, "action": "BUY_MIN_NOTIONAL"}
+
             qty = notional_target / current_price
             
             # Use formatAmount from exchange manager logic or let CCXT handle precision using createOrder
@@ -54,6 +62,13 @@ class AdaptiveOTOScalingAction(BaseAction):
             qty = float(notional_usd) / float(current_price)
             pipeline_id = params.get("pipeline_id")
             
+            # V5.9.40: Proactive margin check (Leverage Aware)
+            margin_check = await exchange_manager.check_margin_availability(symbol, notional_usd)
+            if not margin_check.get("available", True):
+                error_msg = f"Insufficient Margin: Need {margin_check.get('required'):.2f} {margin_check.get('asset')}, Have {margin_check.get('balance'):.2f} (Leverage: {margin_check.get('leverage')}x)"
+                logger.error(f"[AdaptiveOTO] Aborting: {error_msg}")
+                return {"success": False, "error": error_msg}
+
             from app.db.database import get_session_direct, BotPipelineProcess
             
             # Ensure symbol is normalized to CCXT standard for consistent event routing
@@ -311,7 +326,16 @@ class AdaptiveOTOScalingAction(BaseAction):
                 except Exception as cancel_err:
                     pass # Already handled or irrelevant for event-driven logic
 
-            # 2. Apply Precision
+            # 2. Dynamic Notional Scaling (V5.9.41)
+            # Ensure notional >= 5.0 USDC
+            min_safe_qty = await exchange_manager.get_safe_min_notional_qty(symbol, target_price)
+            if min_safe_qty > float(qty):
+                logger.info(f"[CHASE] Scaling qty for {symbol}: {qty} -> {min_safe_qty} to maintain notional >= 5.0")
+                qty = min_safe_qty
+                process.amount = min_safe_qty
+                # process will be committed at the end of the method
+
+            # 3. Apply Precision
             qty_str = await exchange_manager.amount_to_precision(symbol, float(qty))
             price_str = await exchange_manager.price_to_precision(symbol, float(target_price))
             
@@ -383,6 +407,17 @@ class AdaptiveOTOScalingAction(BaseAction):
     @staticmethod
     async def handle_fill(process, session):
         """Called when entry order is fully closed/filled."""
+        if process.sub_status == "PLACING_TP":
+            logger.warning(f"[CHASE] handle_fill already in progress for {process.symbol} (ID: {process.id})")
+            return
+            
+        # Early guard to prevent re-entry (V5.9.37)
+        if process.status in ["COMPLETED", "DONE"] or process.sub_status == "PLACING_TP":
+            return
+            
+        process.sub_status = "PLACING_TP"
+        session.commit() # Atomic guard
+        
         logger.info(f"[CHASE] Entry FILLED for {process.symbol}. Placing TP.")
         try:
             order = await exchange_manager.fetch_order_raw(process.symbol, process.entry_order_id)
@@ -425,6 +460,9 @@ class AdaptiveOTOScalingAction(BaseAction):
                 params={"reduceOnly": True, "newClientOrderId": tp_client_id}
             )
             
+            if tp_order and tp_order.get('id'):
+                process.exit_order_id = str(tp_order['id'])
+                
             symbol = process.symbol
             
             # Log TP placement signal
@@ -454,7 +492,7 @@ class AdaptiveOTOScalingAction(BaseAction):
             
             # Tell engine we don't need ticker stream anymore
             from app.core.stream_service import stream_manager
-            stream_manager.unsubscribe(symbol)
+            await stream_manager.unsubscribe(symbol)
             logger.info(f"[CHASE] Completed OTO loop for {symbol}. TP at {price_str}, order ID: {tp_order.get('id')}")
             
         except Exception as e:
@@ -510,7 +548,7 @@ class AdaptiveOTOScalingAction(BaseAction):
         session.add(process)
         session.commit()
         from app.core.stream_service import stream_manager
-        stream_manager.unsubscribe(symbol)
+        await stream_manager.unsubscribe(symbol)
 
 class RepairChaseAction(BaseAction):
     """

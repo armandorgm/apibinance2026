@@ -54,6 +54,13 @@ class ChaseV2Service:
             # V5.9.38: Proactive normalization to ensure registry match (DIAS Robustness)
             symbol = await exchange_manager.normalize_symbol(symbol)
             
+            # V5.9.40: Proactive margin check (Leverage Aware)
+            margin_check = await exchange_manager.check_margin_availability(symbol, amount)
+            if not margin_check.get("available", True):
+                error_msg = f"Insufficient Margin: Need {margin_check.get('required'):.2f} {margin_check.get('asset')}, Have {margin_check.get('balance'):.2f} (Leverage: {margin_check.get('leverage')}x)"
+                logger.error(f"[CHASE V2 SERVICE] Aborting: {error_msg}")
+                return {"success": False, "error": error_msg}
+
             print(f"[DEBUG] Subscribing to {symbol}...")
             await stream_manager.subscribe(symbol)
             
@@ -208,6 +215,20 @@ class ChaseV2Service:
                     target_price = ask
                     
             price_str = await exchange_manager.price_to_precision(process.symbol, target_price)
+            
+            # V5.9.41: Dynamic Notional Scaling
+            # Check if current quantity * new price >= 5.0 USDC
+            # If not, increase quantity to satisfy min_notional
+            min_safe_qty = await exchange_manager.get_safe_min_notional_qty(symbol, target_price)
+            if min_safe_qty > process.amount:
+                logger.info(
+                    f"[CHASE V2] Notional Scaling: Increasing qty for {symbol} "
+                    f"from {process.amount} to {min_safe_qty} (Price: {target_price})"
+                )
+                process.amount = min_safe_qty
+                # Note: session.add(process) is usually handled by the caller or we can do it here
+                # but process is already attached to the session passed in args.
+            
             qty_str = await exchange_manager.amount_to_precision(process.symbol, process.amount)
             
             # Handle RECOVERING state by creating a new order
@@ -260,6 +281,17 @@ class ChaseV2Service:
             logger.error(f"[CHASE V2 SERVICE] Tick Error: {e}")
 
     async def handle_fill(self, process: BotPipelineProcess, session, executed_qty: float = None):
+        if process.sub_status == "PLACING_TP":
+            logger.warning(f"[CHASE V2] handle_fill already in progress for {process.symbol} (ID: {process.id})")
+            return
+            
+        # Early guard to prevent re-entry (V5.9.37)
+        if process.status in ["COMPLETED", "DONE"] or process.sub_status == "PLACING_TP":
+            return
+            
+        process.sub_status = "PLACING_TP"
+        session.commit() # Atomic guard
+        
         try:
             if executed_qty is not None and executed_qty > 0:
                 process.amount = executed_qty
@@ -296,13 +328,14 @@ class ChaseV2Service:
             if res.get("success"):
                 process.status = "COMPLETED"
                 process.sub_status = "DONE_NATIVE"
+                process.exit_order_id = str(res["result"].get("orderId"))
                 process.finished_at = datetime.utcnow()
                 session.commit()
-                logger.info(f"[CHASE V2 SERVICE] TP placed successfully for {symbol}")
+                logger.info(f"[CHASE V2 SERVICE] TP placed successfully for {symbol} (ID: {process.exit_order_id})")
                 
                 from app.services.bot_service import bot_instance
                 bot_instance.engine.unregister_chase(symbol)
-                stream_manager.unsubscribe(symbol)
+                await stream_manager.unsubscribe(symbol)
 
                 # ── Bot B hook: emit to CloseFillReactor (non-blocking) ──
                 from app.services.close_fill_reactor import close_fill_reactor
@@ -330,7 +363,7 @@ class ChaseV2Service:
             
             from app.services.bot_service import bot_instance
             bot_instance.engine.unregister_chase(process.symbol)
-            stream_manager.unsubscribe(process.symbol)
+            await stream_manager.unsubscribe(process.symbol)
 
     async def stop_chase(self, process_id: int) -> bool:
         with get_session_direct() as session:
@@ -352,7 +385,7 @@ class ChaseV2Service:
                 session.commit()
                 from app.services.bot_service import bot_instance
                 bot_instance.engine.unregister_chase(process.symbol)
-                stream_manager.unsubscribe(process.symbol)
+                await stream_manager.unsubscribe(process.symbol)
                 return True
             return False
 

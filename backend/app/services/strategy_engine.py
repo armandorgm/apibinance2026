@@ -116,7 +116,8 @@ class PipelineEngine:
 
                     active_processes = session.query(BotPipelineProcess).filter(
                         BotPipelineProcess.symbol == symbol,
-                        BotPipelineProcess.status == "CHASING"
+                        BotPipelineProcess.status == "CHASING",
+                        BotPipelineProcess.sub_status != "PLACING_TP" # Guard against race conditions (V5.9.36)
                     ).all()
 
                     if not active_processes:
@@ -170,29 +171,34 @@ class PipelineEngine:
         
         logger.debug(f"[STREAM] Processing Order Update: {symbol} ID={order_id} ST={status}")
         
-        with get_session_direct() as session:
-            from app.db.database import BotPipelineProcess
-            process = session.query(BotPipelineProcess).filter(
-                BotPipelineProcess.symbol == symbol,
-                BotPipelineProcess.entry_order_id == order_id
-            ).first()
-
-            if not process:
-                return
-
-            from .pipeline_engine.actions import AdaptiveOTOScalingAction
-            from .pipeline_engine.native_actions import NativeOTOScalingAction
-            from app.services.chase_v2_service import chase_v2_service
+        # Guard with per-symbol lock to prevent race with polling fallback
+        if symbol not in self._locks:
+            self._locks[symbol] = asyncio.Lock()
             
-            # Unified Handler Map
-            HANDLER_MAP = {
-                "CHASE_V2": chase_v2_service,
-                "NATIVE_OTO": NativeOTOScalingAction,
-                "ADAPTIVE_OTO": AdaptiveOTOScalingAction
-            }
+        async with self._locks[symbol]:
+            with get_session_direct() as session:
+                from app.db.database import BotPipelineProcess
+                process = session.query(BotPipelineProcess).filter(
+                    BotPipelineProcess.symbol == symbol,
+                    BotPipelineProcess.entry_order_id == order_id
+                ).first()
 
-            # Dispatch using explicit handler_type with Chase V2 as safe fallback
-            handler = HANDLER_MAP.get(process.handler_type, chase_v2_service)
-            
-            # Delegate to unified handler
-            await handler.handle_order_event(process, order_data, session)
+                if not process:
+                    return
+
+                from .pipeline_engine.actions import AdaptiveOTOScalingAction
+                from .pipeline_engine.native_actions import NativeOTOScalingAction
+                from app.services.chase_v2_service import chase_v2_service
+                
+                # Unified Handler Map
+                HANDLER_MAP = {
+                    "CHASE_V2": chase_v2_service,
+                    "NATIVE_OTO": NativeOTOScalingAction,
+                    "ADAPTIVE_OTO": AdaptiveOTOScalingAction
+                }
+
+                # Dispatch using explicit handler_type with Chase V2 as safe fallback
+                handler = HANDLER_MAP.get(process.handler_type, chase_v2_service)
+                
+                # Delegate to unified handler
+                await handler.handle_order_event(process, order_data, session)

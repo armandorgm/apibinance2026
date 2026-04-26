@@ -27,6 +27,9 @@ class Settings(BaseSettings):
     BOT_SYMBOL: str = "BTC/USDT"
     BOT_INTERVAL: int = 60 # seconds
     
+    # Default leverage for margin checks when API returns None
+    DEFAULT_LEVERAGE: float = 3.0
+    
     def get_cors_origins(self) -> List[str]:
         """
         Parse CORS_ORIGINS from comma-separated string.

@@ -186,6 +186,7 @@ class BotPipelineProcess(SQLModel, table=True):
     
     # Mother order tracking
     entry_order_id: Optional[str] = None
+    exit_order_id: Optional[str] = None
     side: str = Field(default="buy")
     amount: float = Field(default=0.0)
     

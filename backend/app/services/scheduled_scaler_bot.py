@@ -223,7 +223,8 @@ class ScheduledScalerBot:
             from app.core.exchange import exchange_manager
 
             # ── Step 1: Infer side ────────────────────────────────
-            side, current_price, nearest_tp_price = await self._infer_side_and_tp(
+            min_qty = 0.0
+            side, current_price, nearest_tp_price, leverage = await self._infer_side_and_tp(
                 symbol, binance_native
             )
             if side is None:
@@ -235,16 +236,19 @@ class ScheduledScalerBot:
                 )
                 return
 
-            # ── Step 2: Balance check ─────────────────────────────
-            quote_asset = _extract_quote_asset(symbol)
-            available = await binance_native.get_available_balance(quote_asset)
+            # Get safe min quantity (UCOE V5.9 standard)
             min_qty = await exchange_manager.get_safe_min_notional_qty(symbol, current_price)
-            min_cost = min_qty * current_price * _BALANCE_SAFETY_MULTIPLIER
-            
-            logger.info(f"[SCALER] Balance Check: available={available:.4f} {quote_asset}, required={min_cost:.4f} {quote_asset}")
 
-            if available < min_cost:
-                msg = f"Insufficient balance: {available:.4f} < {min_cost:.4f} required."
+            # ── Step 2: Balance check ─────────────────────────────
+            notional_usd = min_qty * current_price
+            margin_info = await exchange_manager.check_margin_availability(
+                symbol, notional_usd, multiplier=_BALANCE_SAFETY_MULTIPLIER
+            )
+            
+            if not margin_info.get("available", True):
+                available = margin_info.get("balance", 0)
+                min_cost = margin_info.get("required", 0)
+                msg = f"Insufficient balance: {available:.4f} < {min_cost:.4f} required (Notional: {notional_usd:.2f} USD)."
                 logger.warning(f"[SCALER] {msg} Skipping cycle.")
                 await self._log_signal(
                     symbol, "BALANCE", "HOLD", success=False, error=msg
@@ -318,9 +322,9 @@ class ScheduledScalerBot:
 
     async def _infer_side_and_tp(
         self, symbol: str, engine
-    ) -> tuple[Optional[str], float, Optional[float]]:
+    ) -> tuple[Optional[str], float, Optional[float], float]:
         """
-        Returns (side, current_price, nearest_tp_price).
+        Returns (side, current_price, nearest_tp_price, leverage).
         Returns (None, 0.0, None) on abort.
 
         Logic:
@@ -332,19 +336,36 @@ class ScheduledScalerBot:
           - If they disagree → abort.
         """
         # Binance native symbol format: e.g. '1000PEPEUSDC' (no slash, no :)
-        native_symbol = symbol.replace("/", "").replace(":USDC", "").replace(":USDT", "")
+        from app.core.exchange import exchange_manager
+        native_symbol = exchange_manager.get_native_symbol(symbol)
 
         positions = await engine.get_position_risk(native_symbol)
         if not positions:
             logger.warning(f"[SCALER] No position data for {native_symbol}")
-            return None, 0.0, None
-
+            return None, 0.0, None, 1.0
+            
+        # V5.9.38: Extract leverage even if flat (with fallback for missing key)
+        pos = positions[0]
+        leverage_raw = pos.get("leverage")
+        if leverage_raw is not None:
+            leverage = float(leverage_raw)
+        else:
+            # Fallback: calculate from notional and initialMargin
+            notional = abs(float(pos.get("notional", 0.0)))
+            initial_margin = float(pos.get("initialMargin", 0.0))
+            if initial_margin > 0:
+                leverage = float(round(notional / initial_margin))
+            else:
+                # V5.9.42: Use default leverage (3x) instead of 1x when flat
+                leverage = float(getattr(settings, "DEFAULT_LEVERAGE", 3.0))
+                
+        if leverage < 1.0: leverage = 3.0
         position_amt = float(positions[0].get("positionAmt", 0.0))
         current_price = float(positions[0].get("markPrice", 0.0))
-
+        
         if position_amt == 0.0:
             logger.info(f"[SCALER] Flat position for {native_symbol}, no side to infer.")
-            return None, current_price, None
+            return None, current_price, None, leverage
 
         position_side = "buy" if position_amt > 0 else "sell"
 
@@ -389,20 +410,20 @@ class ScheduledScalerBot:
                 f"Using default_profit_pc={self.default_profit_pc}"
             )
             # No TP found → use default, but side is inferred from position
-            return position_side, current_price, None
+            return position_side, current_price, None, leverage
 
         if tp_implied_side != position_side:
             logger.warning(
                 f"[SCALER] Side mismatch: position_side={position_side} "
                 f"vs tp_implied_side={tp_implied_side}. Aborting cycle."
             )
-            return None, current_price, None
+            return None, current_price, None, leverage
 
         logger.info(
             f"[SCALER] Inferred side={position_side}, current={current_price}, "
             f"nearest_tp={nearest_tp_price}"
         )
-        return position_side, current_price, nearest_tp_price
+        return position_side, current_price, nearest_tp_price, leverage
 
     # ──────────────────────────────────────────────────────────────
     # Profit computation

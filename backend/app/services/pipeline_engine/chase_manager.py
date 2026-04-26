@@ -44,20 +44,19 @@ class ChaseDecisionEngine:
             
         # 2. Price Threshold Check
         # Compare current market price with the price when we LAST moved (last_tick_price)
-        if not process.last_tick_price:
-            return True # First time move
-            
+        if process.last_tick_price is None:
+            return True  # First time move
+
         price_diff_percent = abs(current_price - process.last_tick_price) / process.last_tick_price
-        
+
         if price_diff_percent < threshold:
             # logger.debug(f"[CHASE] Price move too small for {process.symbol} ({price_diff_percent:.5%})")
             return False
-            
-        # 3. Aggressive Maker Pursuit (No Directional Restriction)
-        # We REMOVED the directional lock (Chasing up/down strictly).
-        # For Post-Only orders to survive highly volatile markets, they must track the 
-        # order book in BOTH directions. If a BUY price drops, we must drop our Bid 
-        # alongside it. Otherwise, the dropping Ask will cross our stale Bid, 
-        # triggering a -5022 Post-Only rejection.
-        
+
+        side = (process.side or "").lower()
+        if side == "buy" and current_price < process.last_tick_price:
+            return False
+        if side == "sell" and current_price > process.last_tick_price:
+            return False
+
         return True

@@ -160,27 +160,38 @@ class ExchangeManager:
             
         return symbol
 
+    def get_native_symbol(self, symbol: str) -> str:
+        """
+        Normalizes a CCXT symbol to a Binance native symbol (e.g., BTC/USDT:USDT -> BTCUSDT).
+        Handles cases with settlement assets and 1000-prefix symbols without truncation errors.
+        """
+        if not symbol:
+            return ""
+        # 1. Isolate the base/quote part from the settlement part (e.g. :USDT)
+        base_quote = symbol.split(':')[0]
+        # 2. Remove the CCXT slash separator
+        native = base_quote.replace('/', '')
+        return native.upper()
+
     async def get_market_id(self, symbol: str) -> str:
         """
         Translates CCXT standard (1000PEPE/USDC:USDC) to Binance ID (1000PEPEUSDC).
         Used for Native driver and WS subscriptions.
         """
-        if not symbol: return ""
         try:
             exchange = await self.get_exchange()
             if not exchange.markets:
                 await self._execute_with_retry(exchange.load_markets)
             
-            # 1. Direct lookup if it's already a standard symbol in our markets
+            # 1. Market dictionary lookup (Highest precision)
             if symbol in exchange.markets:
                 return exchange.markets[symbol]['id']
             
-            # 2. Heuristic fallback (DIAS Robustness)
-            clean = symbol.replace('/', '').replace(':USDC', '').replace(':USDT', '')
-            return clean.upper()
+            # 2. Centralized normalization fallback
+            return self.get_native_symbol(symbol)
         except Exception as e:
             logger.warning(f"[EXCHANGE] get_market_id failed for {symbol}: {e}")
-            return symbol.replace('/', '').replace(':USDC', '').replace(':USDT', '').upper()
+            return self.get_native_symbol(symbol)
 
     async def fetch_orders_by_symbol(self, symbol: str, since: Optional[int] = None, limit: int = 100) -> List[Dict[str, Any]]:
         await self._rate_limit()
@@ -194,12 +205,24 @@ class ExchangeManager:
                 logger.error(f"[EXCHANGE] Error fetching orders for {norm_sym}: {e}")
             return []
 
-    async def fetch_my_trades(self, symbol: str, since: Optional[int] = None, limit: int = 1000) -> List[Dict[str, Any]]:
+    async def fetch_my_trades(
+        self,
+        symbol: str,
+        since: Optional[int] = None,
+        limit: int = 1000,
+        params: Optional[Dict[str, Any]] = None,
+    ) -> List[Dict[str, Any]]:
         await self._rate_limit()
         exchange = await self.get_exchange()
         norm_sym = await self.normalize_symbol(symbol)
         try:
-            return await self._execute_with_retry(exchange.fetch_my_trades, norm_sym, since=since, limit=limit)
+            return await self._execute_with_retry(
+                exchange.fetch_my_trades,
+                norm_sym,
+                since=since,
+                limit=limit,
+                params=params or {},
+            )
         except Exception as e:
             logger.error(f"[EXCHANGE] Error in fetch_my_trades for {norm_sym}: {e}")
             return []
@@ -362,8 +385,8 @@ class ExchangeManager:
         # Obtener el MIN_NOTIONAL dinámico, si no existe asume 5.0 por seguridad estándar
         min_notional = float(cost_limits.get('min', 5.0))
         
-        # Aplicamos el buffer de seguridad (1.001) sobre el límite de costo
-        safe_min_notional = min_notional * 1.001
+        # Aplicamos el buffer de seguridad (1.01) sobre el límite de costo
+        safe_min_notional = min_notional * 1.01
         
         # 1. Calculamos la cantidad cruda necesaria usando el notional seguro
         raw_qty = safe_min_notional / price
@@ -390,6 +413,81 @@ class ExchangeManager:
         norm_sym = await self.normalize_symbol(symbol)
         exchange = await self.get_exchange()
         return await self._execute_with_retry(exchange.fetch_order, order_id, norm_sym)
+
+    def _extract_quote_asset(self, symbol: str) -> str:
+        """Helper to extract quote asset (USDT/USDC) from symbol strings."""
+        s = symbol.upper()
+        if "USDC" in s: return "USDC"
+        return "USDT"
+
+    async def check_margin_availability(self, symbol: str, notional_usd: float, multiplier: float = 1.05) -> Dict[str, Any]:
+        """
+        Calculates if the account has enough balance to cover the required margin.
+        Returns: {"available": bool, "required": float, "balance": float, "leverage": int, "asset": str}
+        """
+        try:
+            # 1. Get available balance for the correct asset
+            asset = self._extract_quote_asset(symbol)
+            available_balance = await self._native.get_available_balance(asset)
+
+            # 2. Get current leverage for the symbol
+            market_id = await self.get_market_id(symbol)
+            risk_list = await self._native.get_position_risk(market_id)
+            
+            # Fallback 1: If specific symbol check returned empty, try account-wide
+            if not risk_list:
+                risk_list = await self._native.get_position_risk(None)
+
+            leverage = 1
+            found_leverage = False
+            if risk_list and isinstance(risk_list, list):
+                for r in risk_list:
+                    if r.get('symbol') == market_id:
+                        leverage_val = r.get('leverage')
+                        if leverage_val is not None:
+                            leverage = int(leverage_val)
+                            found_leverage = True
+                        break
+            
+            # Fallback 2: Try CCXT if native still didn't find it
+            if not found_leverage:
+                try:
+                    exchange = await self.get_exchange()
+                    # fetch_positions is reliable for leverage even if position is 0
+                    positions = await self._execute_with_retry(exchange.fetch_positions, symbols=[symbol])
+                    if positions and len(positions) > 0:
+                        leverage = int(positions[0].get('leverage', 1))
+                        found_leverage = True
+                except Exception as e:
+                    logger.debug(f"[EXCHANGE] CCXT leverage fallback failed for {symbol}: {e}")
+
+            if not found_leverage:
+                from app.core.config import settings
+                leverage = settings.DEFAULT_LEVERAGE
+                logger.info(f"[EXCHANGE] Leverage detection failed for {symbol}. Using config default: {leverage}x")
+
+            # 3. Calculate required margin
+            required_margin = (notional_usd / leverage) * multiplier
+
+            
+            is_available = available_balance >= required_margin
+            
+            if not is_available:
+                logger.warning(f"[EXCHANGE] Insufficient margin for {symbol}: Need {required_margin:.2f} {asset}, Have {available_balance:.2f}. Notional: {notional_usd}, Leverage: {leverage}x")
+            else:
+                logger.info(f"[EXCHANGE] Margin check passed for {symbol}: Need {required_margin:.2f} {asset}, Have {available_balance:.2f} (Leverage: {leverage}x)")
+
+            return {
+                "available": is_available,
+                "required": required_margin,
+                "balance": available_balance,
+                "leverage": leverage,
+                "asset": asset
+            }
+        except Exception as e:
+            logger.error(f"[EXCHANGE] Error in check_margin_availability for {symbol}: {e}")
+            # Fallback to True to not block if there's an API error, but ideally we should fail safe
+            return {"available": True, "error": str(e)}
 
     async def create_order(self, symbol: str, order_type: str, side: str, amount: str, price: str = None, params: Dict[str, Any] = None) -> Dict[str, Any]:
         norm_sym = await self.normalize_symbol(symbol)

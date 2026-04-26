@@ -238,7 +238,7 @@ class BinanceNativeEngine:
             logger.error(f"[NATIVE] get_open_orders failed for {symbol}: {e}")
             return []
 
-    async def get_position_risk(self, symbol: str) -> list:
+    async def get_position_risk(self, symbol: str = None) -> list:
         """
         GET /fapi/v2/positionRisk — returns position data for a symbol.
         positionAmt > 0 → LONG (buy), positionAmt < 0 → SHORT (sell), 0 → flat.

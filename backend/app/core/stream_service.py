@@ -20,6 +20,7 @@ class StreamManager:
         self.is_running = False
         self._last_market_message_time = 0
         self._keep_alive_task: Optional[asyncio.Task] = None
+        self._loop: Optional[asyncio.AbstractEventLoop] = None
 
     async def start(self):
         """Starts the consolidated native streaming clients."""
@@ -236,9 +237,11 @@ class StreamManager:
                         "price": float(oi["L"]) if oi["L"] != "0" else float(oi["ap"]),
                         "z": float(oi.get("z", 0.0)) if oi.get("z") else 0.0 # Safe extraction (V5.9.29)
                     }
-                    loop = asyncio.get_event_loop()
-                    if loop.is_running():
-                        loop.create_task(self._process_order_native(order_data))
+                    if hasattr(self, '_loop') and self._loop.is_running():
+                        asyncio.run_coroutine_threadsafe(
+                            self._process_order_native(order_data), 
+                            self._loop
+                        )
         except Exception:
             pass
 
