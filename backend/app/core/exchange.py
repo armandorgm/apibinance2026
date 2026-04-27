@@ -1,6 +1,7 @@
 import ccxt.async_support as ccxt
 import ccxt.pro as ccxtpro
 import asyncio
+import sys
 from typing import Dict, Any, List, Optional
 from app.core.logger import logger
 import time
@@ -192,6 +193,36 @@ class ExchangeManager:
         except Exception as e:
             logger.warning(f"[EXCHANGE] get_market_id failed for {symbol}: {e}")
             return self.get_native_symbol(symbol)
+
+    @staticmethod
+    def get_effective_leverage(position: Dict[str, Any]) -> Optional[float]:
+        """Derive leverage from position state or return None if it cannot be inferred."""
+        if not position:
+            return None
+
+        info = position.get('info', {}) if isinstance(position.get('info', {}), dict) else {}
+        leverage_value = position.get('leverage', info.get('leverage'))
+        if leverage_value is not None:
+            try:
+                parsed = float(leverage_value)
+                if parsed > 0:
+                    return parsed
+            except (TypeError, ValueError):
+                pass
+
+        notional = abs(float(position.get('notional', info.get('notional', 0)) or 0))
+        initial_margin = float(
+            position.get('initialMargin',
+                position.get('positionInitialMargin',
+                    info.get('initialMargin', info.get('positionInitialMargin', 0))
+                )
+            ) or 0
+        )
+
+        if initial_margin <= 0 or notional <= 0:
+            return None
+
+        return round(notional / initial_margin, 2)
 
     async def fetch_orders_by_symbol(self, symbol: str, since: Optional[int] = None, limit: int = 100) -> List[Dict[str, Any]]:
         await self._rate_limit()
@@ -438,14 +469,24 @@ class ExchangeManager:
             if not risk_list:
                 risk_list = await self._native.get_position_risk(None)
 
-            leverage = 1
+            def parse_leverage_value(value):
+                if value is None:
+                    return None
+                try:
+                    parsed = float(value)
+                    return parsed if parsed > 0 else None
+                except (TypeError, ValueError):
+                    return None
+
+            leverage = None
             found_leverage = False
             if risk_list and isinstance(risk_list, list):
                 for r in risk_list:
                     if r.get('symbol') == market_id:
                         leverage_val = r.get('leverage')
-                        if leverage_val is not None:
-                            leverage = int(leverage_val)
+                        parsed = parse_leverage_value(leverage_val)
+                        if parsed is not None:
+                            leverage = parsed
                             found_leverage = True
                         break
             
@@ -456,15 +497,21 @@ class ExchangeManager:
                     # fetch_positions is reliable for leverage even if position is 0
                     positions = await self._execute_with_retry(exchange.fetch_positions, symbols=[symbol])
                     if positions and len(positions) > 0:
-                        leverage = int(positions[0].get('leverage', 1))
-                        found_leverage = True
+                        effective_leverage = self.get_effective_leverage(positions[0])
+                        if effective_leverage is not None:
+                            leverage = effective_leverage
+                            found_leverage = True
                 except Exception as e:
                     logger.debug(f"[EXCHANGE] CCXT leverage fallback failed for {symbol}: {e}")
 
-            if not found_leverage:
-                from app.core.config import settings
-                leverage = settings.DEFAULT_LEVERAGE
-                logger.info(f"[EXCHANGE] Leverage detection failed for {symbol}. Using config default: {leverage}x")
+            if not found_leverage or leverage is None:
+                error_message = (
+                    f"Leverage detection failed for {symbol}. "
+                    "Cannot determine leverage from native or CCXT. "
+                    "Shutting down backend due to fatal configuration error."
+                )
+                logger.critical(f"[EXCHANGE] {error_message}")
+                sys.exit(error_message)
 
             # 3. Calculate required margin
             required_margin = (notional_usd / leverage) * multiplier

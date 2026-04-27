@@ -62,3 +62,21 @@ class TestExchangeManagerFetchMyTrades:
                 "BTC/USDT:USDT", since=1000, params={"endTime": 2000}
             )
             assert result == []
+
+    @pytest.mark.asyncio
+    async def test_check_margin_availability_terminates_backend_when_leverage_missing(self):
+        """If leverage cannot be determined, the backend must shutdown via SystemExit."""
+        em = ExchangeManager()
+        em._native = MagicMock()
+        em._native.get_available_balance = AsyncMock(return_value=1000.0)
+        em._native.get_position_risk = AsyncMock(return_value=[])
+
+        mock_exchange = AsyncMock()
+        mock_exchange.fetch_positions = AsyncMock(return_value=[{"leverage": None}])
+
+        em.get_market_id = AsyncMock(return_value="BTCUSDT")
+        with patch.object(em, "get_exchange", return_value=mock_exchange):
+            with pytest.raises(SystemExit) as exc:
+                await em.check_margin_availability("BTCUSDT", notional_usd=10)
+
+        assert "Leverage detection failed" in str(exc.value)

@@ -18,6 +18,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import re
+import sys
 from datetime import datetime
 from typing import Optional
 
@@ -344,22 +345,17 @@ class ScheduledScalerBot:
             logger.warning(f"[SCALER] No position data for {native_symbol}")
             return None, 0.0, None, 1.0
             
-        # V5.9.38: Extract leverage even if flat (with fallback for missing key)
+        # V5.9.38: Extract leverage even if flat (no fallback fallback for missing key)
         pos = positions[0]
-        leverage_raw = pos.get("leverage")
-        if leverage_raw is not None:
-            leverage = float(leverage_raw)
-        else:
-            # Fallback: calculate from notional and initialMargin
-            notional = abs(float(pos.get("notional", 0.0)))
-            initial_margin = float(pos.get("initialMargin", 0.0))
-            if initial_margin > 0:
-                leverage = float(round(notional / initial_margin))
-            else:
-                # V5.9.42: Use default leverage (3x) instead of 1x when flat
-                leverage = float(getattr(settings, "DEFAULT_LEVERAGE", 3.0))
-                
-        if leverage < 1.0: leverage = 3.0
+        leverage = exchange_manager.get_effective_leverage(pos)
+
+        if leverage is None or leverage < 1.0:
+            error_message = (
+                f"Unable to determine leverage for {native_symbol}. "
+                "Shutdown required due to fatal leverage detection failure."
+            )
+            logger.critical(f"[SCALER] {error_message}")
+            sys.exit(error_message)
         position_amt = float(positions[0].get("positionAmt", 0.0))
         current_price = float(positions[0].get("markPrice", 0.0))
         
