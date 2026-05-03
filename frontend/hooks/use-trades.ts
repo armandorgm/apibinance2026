@@ -5,8 +5,9 @@ import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { 
   fetchTrades, syncTrades, syncHistoricalTrades, fetchStats, 
   fetchBotStatus, fetchBotLogs, startBot, stopBot, fetchBotConfig, updateBotConfig, fetchBalances,
-  fetchOpenOrders, fetchFailedOrders,
-  Trade, Stats, SyncResponse, BotStatus, BotSignal, BotConfig, AggregatedBalances, Order 
+  fetchActivePipelines, stopPipeline, fetchUcoeCandidates, fetchUcoePreview, executeUcoeAction, fetchUcoeBulkPreview, executeUcoeBulkAction,
+  fetchScalerStatus, enableScaler, disableScaler,
+  Trade, Stats, SyncResponse, BotStatus, BotSignal, BotConfig, AggregatedBalances, Order, ActivePipeline, UcoeCandidate, UcoePreview, UcoeExecuteResponse, ScalerBotStatus
 } from '@/lib/api'
 
 export function useTrades(symbol: string, logic: string = 'fifo', sortBy: string = 'recent') {
@@ -120,6 +121,100 @@ export function useFailedOrders(limit: number = 50) {
   return useQuery<BotSignal[]>({
     queryKey: ['failed-orders', limit],
     queryFn: () => fetchFailedOrders(limit),
-    refetchInterval: 10000, // Refresh every 10 seconds
+    refetchInterval: 10000,
   })
+}
+
+export function useActivePipelines() {
+  return useQuery<ActivePipeline[]>({
+    queryKey: ['active-pipelines'],
+    queryFn: () => fetchActivePipelines(),
+    refetchInterval: 2000, // Frequent refresh for live chase monitoring
+  })
+}
+
+export function useStopPipeline() {
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: (id: number) => stopPipeline(id),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['active-pipelines'] })
+    }
+  })
+}
+export function useUcoeCandidates(symbol: string, filterMode: string = '7d', orphansOnly: boolean = false) {
+  return useQuery<UcoeCandidate[]>({
+    queryKey: ['ucoe-candidates', symbol, filterMode, orphansOnly],
+    queryFn: () => fetchUcoeCandidates(symbol, filterMode, orphansOnly),
+    enabled: !!symbol,
+    refetchInterval: 10000,
+  })
+}
+
+export function useUcoePreview(symbol: string, orderId: string, profitPc: number) {
+  return useQuery<UcoePreview>({
+    queryKey: ['ucoe-preview', symbol, orderId, profitPc],
+    queryFn: () => fetchUcoePreview(symbol, orderId, profitPc),
+    enabled: !!symbol && !!orderId,
+  })
+}
+
+export function useExecuteUcoe() {
+  const queryClient = useQueryClient()
+  return useMutation<UcoeExecuteResponse, Error, { symbol: string; orderId: string; profitPc: number; overrideAmount?: number }>({
+    mutationFn: ({ symbol, orderId, profitPc, overrideAmount }) => executeUcoeAction(symbol, orderId, profitPc, overrideAmount),
+    onSuccess: (_, variables) => {
+      queryClient.invalidateQueries({ queryKey: ['trades', variables.symbol] })
+      queryClient.invalidateQueries({ queryKey: ['bot-logs'] })
+      queryClient.invalidateQueries({ queryKey: ['ucoe-candidates', variables.symbol] })
+    },
+  })
+}
+
+export function useUcoeBulkPreview(symbol: string, orderIds: string[], profitPc: number) {
+  return useQuery<UcoePreview>({
+    queryKey: ['ucoe-bulk-preview', symbol, orderIds, profitPc],
+    queryFn: () => fetchUcoeBulkPreview(symbol, orderIds, profitPc),
+    enabled: !!symbol && orderIds.length > 0,
+  })
+}
+
+export function useExecuteUcoeBulk() {
+  const queryClient = useQueryClient()
+  return useMutation<UcoeExecuteResponse, Error, { symbol: string; orderIds: string[]; profitPc: number; overrideAmount?: number }>({
+    mutationFn: ({ symbol, orderIds, profitPc, overrideAmount }) => executeUcoeBulkAction(symbol, orderIds, profitPc, overrideAmount),
+    onSuccess: (_, variables) => {
+      queryClient.invalidateQueries({ queryKey: ['trades', variables.symbol] })
+      queryClient.invalidateQueries({ queryKey: ['bot-logs'] })
+      queryClient.invalidateQueries({ queryKey: ['ucoe-candidates', variables.symbol] })
+    },
+  })
+}
+
+export function useScalerStatus() {
+  return useQuery<ScalerBotStatus>({
+    queryKey: ['scaler-status'],
+    queryFn: () => fetchScalerStatus(),
+    refetchInterval: 10000, // Refresh status every 10 seconds
+  })
+}
+
+export function useScalerControl() {
+  const queryClient = useQueryClient()
+
+  const enable = useMutation<any, Error, { symbol: string, defaultProfitPc?: number, intervalHours?: number }>({
+    mutationFn: ({ symbol, defaultProfitPc, intervalHours }) => enableScaler(symbol, defaultProfitPc, intervalHours),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['scaler-status'] })
+    },
+  })
+
+  const disable = useMutation<any, Error, void>({
+    mutationFn: () => disableScaler(),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['scaler-status'] })
+    },
+  })
+
+  return { enable, disable }
 }

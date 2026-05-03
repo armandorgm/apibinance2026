@@ -4,6 +4,16 @@
 
 const API_BASE_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000'
 
+export interface FillDetail {
+  trade_id: string
+  order_id: string
+  price: number
+  amount: number
+  fee: number
+  datetime: string
+  role: string
+}
+
 export interface Trade {
   id: number
   symbol: string
@@ -29,6 +39,9 @@ export interface Trade {
   /** Tipos de orden (Binance) calculados en backend */
   entry_order_tags?: string[]
   exit_order_tags?: string[]
+  /** Binance Order IDs for reconciliation */
+  entry_order_id?: string | null
+  exit_order_id?: string | null
   /** Origin Centric fields */
   originator?: string
   can_be_entry?: boolean
@@ -42,6 +55,9 @@ export interface Trade {
     conditional_kind?: string | null
     algo_type?: string | null
   } | null
+  /** Nested Fills for UI Expansion */
+  entry_fills?: FillDetail[]
+  exit_fills?: FillDetail[]
 }
 
 export interface ExchangeLog {
@@ -115,6 +131,42 @@ export interface BotSignal {
   created_at: string
 }
 
+export interface ActivePipeline {
+  id: number
+  symbol: string
+  pipeline_id: number
+  entry_order_id: string | null
+  last_tick_price: number | null
+  last_order_price: number | null
+  status: string
+  sub_status: string
+  retry_count: number
+  side: string
+  amount: number
+  created_at: string | null
+  finished_at: string | null
+}
+
+export interface ChaseSimulationRequest {
+  current_price: number
+  order_price: number
+  last_tick_price?: number | null
+  side: string
+  last_update_iso: string
+  cooldown_seconds?: number | null
+  price_threshold?: number | null
+  status: string
+}
+
+export interface ChaseSimulationResponse {
+  status: string
+  order_price: number
+  should_update: boolean
+  action?: string
+  reason: string
+  last_update_iso?: string
+}
+
 export interface BotConfig {
   id: number
   symbol: string
@@ -145,6 +197,82 @@ export interface BotStatus {
     action: string | null
     context: any
   } | null
+}
+
+export interface UcoeCandidate {
+  id: string
+  symbol: string
+  type: string
+  side: string
+  price: number
+  amount: number
+  filled: number
+  status: string
+  timestamp: number
+  datetime: string
+  is_compatible_with_reduce_only: boolean
+  is_orphan: boolean
+}
+
+export interface UcoePreview {
+  symbol: string
+  reference_order_id?: string
+  reference_ids?: string[]
+  reference_side: string
+  reference_price?: number
+  reference_price_avg?: number
+  target_side: string
+  target_price: number
+  original_amount?: number
+  original_total_amount?: number
+  adjusted_amount?: number
+  adjusted_total_amount?: number
+  needs_scaling: boolean
+  reduce_only: boolean
+  profit_percentage: number
+  position_context: {
+    current_side: string
+    net_pos: number
+    timestamp?: number
+    leverage?: number
+  }
+  projected_net_pos?: number
+  missing_amount_to_zero?: number
+  open_tp_qty?: number
+  algo_units?: number
+  basic_units?: number
+  algo_breakdown?: {
+    tp: number
+    sl: number
+    trailing: number
+  }
+  pos_units?: number
+  action_units?: number
+  algo_notional_est?: number
+  basic_notional_est?: number
+  action_notional_est?: number
+}
+
+export interface UcoeExecuteResponse {
+  success: boolean
+  order_id: string
+  side: string
+  price: string
+  amount: string
+  reduce_only: boolean
+  is_bulk?: boolean
+}
+
+export interface ScalerBotStatus {
+  is_enabled: boolean
+  symbol: string | null
+  default_profit_pc: number
+  interval_hours: number
+  loop_running: boolean
+  cycles_executed?: number
+  last_execution_at?: string | null
+  last_cycle_side?: string | null
+  last_profit_pc_used?: number | null
 }
 
 export async function fetchTrades(symbol: string, logic: string = 'fifo', sortBy: string = 'recent'): Promise<Trade[]> {
@@ -264,5 +392,256 @@ export async function fetchOpenOrders(symbol?: string): Promise<Order[]> {
 export async function fetchFailedOrders(limit: number = 50): Promise<BotSignal[]> {
   const response = await fetch(`${API_BASE_URL}/api/orders/failed?limit=${limit}`)
   if (!response.ok) throw new Error('Error fetching failed orders')
+  return response.json()
+}
+
+
+// --- PIPELINES API ---
+
+export interface PipelineMetadata {
+  providers: string[]
+  actions: string[]
+  operators: string[]
+}
+
+export interface BotPipeline {
+  id: number
+  name: string
+  symbol: string
+  is_active: boolean
+  trigger_event: string
+  pipeline_config: string
+  created_at: string
+  updated_at: string
+}
+
+export async function fetchPipelineMetadata(): Promise<PipelineMetadata> {
+  const response = await fetch(`${API_BASE_URL}/api/bot/pipelines/metadata`)
+  if (!response.ok) throw new Error('Error fetching pipeline metadata')
+  return response.json()
+}
+
+export async function fetchPipelines(): Promise<BotPipeline[]> {
+  const response = await fetch(`${API_BASE_URL}/api/bot/pipelines`)
+  if (!response.ok) throw new Error('Error fetching pipelines')
+  return response.json()
+}
+
+export async function togglePipeline(id: number): Promise<BotPipeline> {
+  const response = await fetch(`${API_BASE_URL}/api/bot/pipelines/${id}/toggle`, { method: 'PUT' })
+  if (!response.ok) throw new Error('Error toggling pipeline')
+  return response.json()
+}
+
+export async function deletePipeline(id: number): Promise<void> {
+  const response = await fetch(`${API_BASE_URL}/api/bot/pipelines/${id}`, { method: 'DELETE' })
+  if (!response.ok) throw new Error('Error deleting pipeline')
+}
+
+export async function createPipeline(payload: Partial<BotPipeline>): Promise<BotPipeline> {
+  const response = await fetch(`${API_BASE_URL}/api/bot/pipelines`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload),
+  })
+  if (!response.ok) throw new Error('Error creating pipeline')
+  return response.json()
+}
+
+export async function triggerManualAction(
+  symbol: string, 
+  action_type: string,
+  params?: {
+    side?: string,
+    amount?: number,
+    threshold?: number,
+    cooldown?: number,
+    profit_pc?: number
+  }
+): Promise<{status: string, message: string}> {
+  const response = await fetch(`${API_BASE_URL}/api/bot/manual-action`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ 
+      symbol, 
+      action_type,
+      ...params
+    }),
+  })
+  if (!response.ok) {
+    const err = await response.json().catch(() => ({}));
+    const message = typeof err.detail === 'string' 
+      ? err.detail 
+      : JSON.stringify(err.detail || err) || 'Error triggering manual action';
+    throw new Error(message);
+  }
+  return response.json()
+}
+
+export async function fetchActivePipelines(): Promise<ActivePipeline[]> {
+  const response = await fetch(`${API_BASE_URL}/api/bot/active-pipelines`)
+  if (!response.ok) throw new Error('Error fetching active pipelines')
+  return response.json()
+}
+
+export async function stopPipeline(id: number): Promise<void> {
+  const response = await fetch(`${API_BASE_URL}/api/bot/active-pipelines/${id}`, { method: 'DELETE' })
+  if (!response.ok) throw new Error('Error stopping pipeline')
+}
+
+export async function simulateChase(req: ChaseSimulationRequest): Promise<ChaseSimulationResponse> {
+  const response = await fetch(`${API_BASE_URL}/api/chase/simulate`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(req),
+  })
+  if (!response.ok) {
+    const error = await response.json().catch(() => ({ detail: response.statusText }))
+    throw new Error(error.detail || `Error simulating chase: ${response.statusText}`)
+  }
+  return response.json()
+}
+
+// --- CHASE V2 API ---
+export interface ChaseV2Status {
+  id: number
+  symbol: string
+  side: string
+  amount: number
+  entry_order_id: string | null
+  sub_status: string
+  last_order_price: number | null
+  last_tick_price: number | null
+  created_at: string | null
+  updated_at: string | null
+}
+
+export async function startChaseV2(symbol: string, side: string, amount: number, profitPc: number = 0.005): Promise<any> {
+  const response = await fetch(`${API_BASE_URL}/api/chase/init`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ symbol, side, amount, profit_pc: profitPc, pipeline_id: 0 }),
+  })
+  if (!response.ok) {
+    const err = await response.json().catch(() => ({ detail: response.statusText }))
+    throw new Error(err.detail || 'Error starting Chase V2')
+  }
+  return response.json()
+}
+
+export async function stopChaseV2(processId: number): Promise<any> {
+  const response = await fetch(`${API_BASE_URL}/api/chase/stop`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ process_id: processId }),
+  })
+  if (!response.ok) {
+    const err = await response.json().catch(() => ({ detail: response.statusText }))
+    throw new Error(err.detail || 'Error stopping Chase V2')
+  }
+  return response.json()
+}
+
+export async function fetchChaseV2Status(symbol?: string): Promise<{ success: boolean, active_processes: ChaseV2Status[] }> {
+  const url = new URL(`${API_BASE_URL}/api/chase/status`)
+  if (symbol) url.searchParams.append('symbol', symbol)
+  const response = await fetch(url.toString())
+  if (!response.ok) throw new Error('Error fetching Chase V2 status')
+  return response.json()
+}
+
+
+export async function fetchUcoeCandidates(symbol: string, filterMode: string = '7d', orphansOnly: boolean = false): Promise<UcoeCandidate[]> {
+  const res = await fetch(`${API_BASE_URL}/api/unified-counter-order-engine/candidates?symbol=${encodeURIComponent(symbol)}&filter_mode=${filterMode}&orphans_only=${orphansOnly}`)
+  if (!res.ok) throw new Error('Failed to fetch UCOE candidates')
+  return res.json()
+}
+
+export async function fetchUcoePreview(symbol: string, orderId: string, profitPc: number = 0.5): Promise<UcoePreview> {
+  const response = await fetch(`${API_BASE_URL}/api/unified-counter-order-engine/preview?symbol=${encodeURIComponent(symbol)}&order_id=${encodeURIComponent(orderId)}&profit_pc=${profitPc}`)
+  if (!response.ok) {
+    const err = await response.json().catch(() => ({}))
+    throw new Error(err.detail || 'Error fetching UCOE preview')
+  }
+  return response.json()
+}
+
+export async function executeUcoeAction(symbol: string, orderId: string, profitPc: number = 0.5, overrideAmount?: number): Promise<UcoeExecuteResponse> {
+  let url = `${API_BASE_URL}/api/unified-counter-order-engine/execute?symbol=${encodeURIComponent(symbol)}&order_id=${encodeURIComponent(orderId)}&profit_pc=${profitPc}`
+  if (overrideAmount !== undefined) url += `&override_amount=${overrideAmount}`
+  
+  const response = await fetch(url, { method: 'POST' })
+  if (!response.ok) {
+    const err = await response.json().catch(() => ({}))
+    throw new Error(err.detail || 'Error executing UCOE action')
+  }
+  return response.json()
+}
+
+export async function fetchUcoeBulkPreview(symbol: string, orderIds: string[], profitPc: number = 0.5): Promise<UcoePreview> {
+  const response = await fetch(`${API_BASE_URL}/api/unified-counter-order-engine/bulk-preview?symbol=${encodeURIComponent(symbol)}&order_ids=${orderIds.join(',')}&profit_pc=${profitPc}`)
+  if (!response.ok) {
+    const err = await response.json().catch(() => ({}))
+    throw new Error(err.detail || 'Error fetching UCOE bulk preview')
+  }
+  return response.json()
+}
+
+export async function executeUcoeBulkAction(symbol: string, orderIds: string[], profitPc: number = 0.5, overrideAmount?: number): Promise<UcoeExecuteResponse> {
+  let url = `${API_BASE_URL}/api/unified-counter-order-engine/bulk-execute?symbol=${encodeURIComponent(symbol)}&order_ids=${orderIds.join(',')}&profit_pc=${profitPc}`
+  if (overrideAmount !== undefined) url += `&override_amount=${overrideAmount}`
+
+  const response = await fetch(url, { method: 'POST' })
+  if (!response.ok) {
+    const err = await response.json().catch(() => ({}))
+    throw new Error(err.detail || 'Error executing UCOE bulk action')
+  }
+  return response.json()
+}
+
+
+export async function watchSymbol(symbol: string): Promise<any> {
+  const response = await fetch(`${API_BASE_URL}/api/watch`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ symbol }),
+  })
+  if (!response.ok) throw new Error('Error requesting symbol watch')
+  return response.json()
+}
+
+// --- SCALER BOT API ---
+
+export async function fetchScalerStatus(): Promise<ScalerBotStatus> {
+  const response = await fetch(`${API_BASE_URL}/api/scaler/status`)
+  if (!response.ok) throw new Error('Error fetching scaler status')
+  return response.json()
+}
+
+export async function enableScaler(symbol: string, defaultProfitPc: number = 0.005, intervalHours: number = 8.0): Promise<any> {
+  const response = await fetch(`${API_BASE_URL}/api/scaler/enable`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      symbol,
+      default_profit_pc: defaultProfitPc,
+      interval_hours: intervalHours
+    }),
+  })
+  if (!response.ok) {
+    const err = await response.json().catch(() => ({ detail: response.statusText }))
+    throw new Error(err.detail || 'Error enabling scaler')
+  }
+  return response.json()
+}
+
+export async function disableScaler(): Promise<any> {
+  const response = await fetch(`${API_BASE_URL}/api/scaler/disable`, {
+    method: 'POST',
+  })
+  if (!response.ok) {
+    const err = await response.json().catch(() => ({ detail: response.statusText }))
+    throw new Error(err.detail || 'Error disabling scaler')
+  }
   return response.json()
 }

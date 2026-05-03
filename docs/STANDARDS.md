@@ -6,7 +6,7 @@ Este documento es la **Fuente de Verdad Maestra** para el desarrollo, documentac
 
 ## 🚀 1. Ciclo de Vida de Ejecución (.temp/)
 Toda tarea compleja debe seguir una trazabilidad obligatoria dentro de la carpeta `.temp/`:
-1. **Fase Inicial**: Generar `PLAN_EJECUCION.md` detallando la hoja de ruta y objetivos.
+1. **Fase Inicial**: Generar `PLAN_EJECUCION.md` detallando la hoja de ruta y objetivos. **CRÍTICO:** Debe incluir obligatoriamente el ID de Conversación o enlace del agente en el encabezado para evitar que agentes en paralelo sobrescriban los planes.
 2. **Fase de Progreso**: Actualizar el archivo con logs de cambios, errores interceptados y ajustes.
 3. **Fase de Cierre**: Registrar el estado final del sistema.
 4. **Soberanía del Usuario**: Al terminar, preguntar si se desea eliminar temporales, ejecutar plan reparador, modificador o restaurador.
@@ -37,7 +37,44 @@ El archivo `docs/PROJECT_MAP.md` es el "Cerebro Colectivo" del proyecto y debe p
 - **PnL**: El cálculo neto debe descontar siempre todas las comisiones.
 - **Latencia**: Al modificar la API local, esperar 5-10 segundos antes de ejecutar tests para permitir el reload del runtime.
 
+## 🛠️ 6. CLI y Sintaxis (Entorno Preferido: Git Bash)
+Para garantizar la máxima precisión y compatibilidad con agentes de IA, el entorno de ejecución estándar es **Git Bash**.
+
+1. **Operadores de Cadena**: Usar `&&` para encadenar comandos exitosos y `||` para manejo de errores (Estándar POSIX).
+2. **Paths**: Siempre usar barras diagonales `/` para rutas (ej: `backend/app/main.py`), incluso en Windows, ya que Git Bash las traduce correctamente. evitar la contra-barra `\` para prevenir errores de escape.
+3. **Quoting**: Usar comillas simples `'` para strings literales y comillas dobles `"` cuando se requiera interpolación de variables.
+4. **Herramientas**: Aprovechar las utilidades estándar de Bash (`grep`, `find`, `sed`, `awk`) para manipulación de archivos y logs.
+5. **Logs**: Usar `tail -f <file>` para monitoreo en tiempo real.
+5. **Tip de Productividad (Resiliencia)**: Si necesitas encadenar comandos en cualquier versión de PowerShell garantizando el éxito del anterior, usa:
+   `command1; if ($?) { command2 }`
+   Donde `$?` es una variable booleana que indica el éxito de la última ejecución.
+
 ---
 
 > [!IMPORTANT]
 > El incumplimiento de estas reglas, especialmente la de **no perder conocimiento** en `PROJECT_MAP.md`, se considera un fallo crítico de ejecución.
+
+## 🧪 7. Verificación Previa de Servicios (Preflight Check)
+Antes de ejecutar cualquier prueba técnica o de integración, es **OBLIGATORIO** verificar que tanto el frontend como el backend estén en estado `RUNNING`.
+
+1. **Procedimiento Automático**: Ejecutar el script de verificación:
+   ```powershell
+   & 'f:/apibinance2026/.venv/Scripts/python.exe' scripts/preflight_check.py
+   ```
+2. **Criterio de Aceptación**: Si el script falla, el agente o desarrollador NO debe proceder con las pruebas hasta que los servicios sean reiniciados.
+
+## 🧪 8. Ejecución de Pruebas Unificadas
+Para garantizar que las pruebas se ejecuten con todas las dependencias necesarias (`pytest`, `sqlmodel`, etc.), es **obligatorio** utilizar el intérprete del entorno virtual (`.venv`).
+
+### ❌ Forma INCORRECTA (Usa el Python del sistema, faltarán módulos):
+```bash
+python backend/tests/run_all.py
+```
+
+### ✅ Forma CORRECTA (PowerShell - Asegura el uso del .venv):
+```powershell
+& 'f:/apibinance2026/.venv/Scripts/python.exe' backend/tests/run_all.py
+```
+
+---
+*Última actualización: 2026-04-08 | Integración de Expandable Trades funcional.*

@@ -9,7 +9,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', '..'))
 import pytest
 from datetime import datetime
 from app.services.tracker_logic import TradeTracker, FIFOMatchStrategy, LIFOMatchStrategy, AtomicMatchStrategy
-from app.db.database import Fill
+from app.db.database import Fill, BasicOrder, ConditionalOrder, Originator, OrderSource
 
 BASE_TS = 1700000000000  # arbitrary base timestamp in ms
 
@@ -177,3 +177,71 @@ class TestOriginCentricRules:
         trades = tracker.match_trades(fills, "fifo")
         assert len(trades) == 1, "Manual order SHOULD be an entry candidate"
         assert trades[0]['originator'] == "MANUAL"
+
+
+class TestDBIntegrationMatching:
+    """
+    Escenario: Validación de integración con las nuevas tablas físicas segmentadas.
+    Verifica que el Tracker consulte correctamente BasicOrder y ConditionalOrder.
+    """
+
+    def test_tracker_picks_metadata_from_segmented_tables(self, session):
+        """
+        Garantiza que el Tracker encuentre el atributo 'can_be_entry' 
+        consultando las tablas físicas correpondientes.
+        """
+        tracker = TradeTracker("DB_TEST/USDT")
+        
+        # 1. Persistimos una orden básica permitida
+        b_order = BasicOrder(
+            id="order_basic_1", symbol="DB_TEST/USDT", side="buy", amount=1.0, price=100.0,
+            status="FILLED", datetime=datetime.now(), originator=Originator.MANUAL,
+            can_be_entry=True
+        )
+        session.add(b_order)
+        
+        # 2. Persistimos una orden condicional que NO puede ser entrada
+        c_order = ConditionalOrder(
+            id="order_cond_1", symbol="DB_TEST/USDT", side="buy", amount=1.0, price=100.0,
+            status="FILLED", datetime=datetime.now(), originator=Originator.AUTO,
+            can_be_entry=False
+        )
+        session.add(c_order)
+        session.commit()
+
+        # 3. Creamos fills que referencian a estas órdenes
+        fills = [
+            make_fill("f1", "buy", 1.0, 100.0, 0, "order_basic_1"),
+            make_fill("f2", "buy", 1.0, 100.0, 1000, "order_cond_1"),
+            make_fill("s1", "sell", 1.0, 120.0, 2000, "sell_1")
+        ]
+
+        # 4. Caso A: FIFO debe matchear con la básica (entry=True)
+        # s1 debería matchear con f1 (entry=True) y no con f2 (entry=False)
+        trades = tracker.match_trades(fills, "fifo", session=session)
+        
+        assert len(trades) == 1, "Debe haber detectado solo 1 entrada válida desde la DB"
+        assert trades[0]['entry_order_id'] == "order_basic_1"
+        assert trades[0]['can_be_entry'] is True
+
+    def test_tracker_identifies_algo_order_type(self, session):
+        """Verifica que el tracker marque las órdenes de la tabla conditional_orders como ALGO."""
+        tracker = TradeTracker("DB_TEST/USDT")
+        
+        c_order = ConditionalOrder(
+            id="algo_id_123", symbol="DB_TEST/USDT", side="sell", amount=1.0, price=150.0,
+            status="FILLED", datetime=datetime.now(), originator=Originator.AUTO,
+            can_be_entry=False
+        )
+        session.add(c_order)
+        session.commit()
+
+        fills = [
+            make_fill("b1", "buy", 1.0, 100.0, 0, "manual_buy"),
+            make_fill("s1", "sell", 1.0, 150.0, 1000, "algo_id_123")
+        ]
+        
+        trades = tracker.match_trades(fills, "fifo", session=session)
+        assert len(trades) == 1
+        # En tracker_logic.py:272 pusimos que si viene de ConditionalOrder, order_type = "ALGO"
+        assert trades[0]['exit_order_type'] == "ALGO"

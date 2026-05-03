@@ -21,7 +21,7 @@ class BaseOrder(ABC):
         create_time_ms: int | None = None,
         conditional_kind: str | None = None
     ):
-        self.id = order_id
+        self.raw_id = order_id # ID fiel de la API (DB Source)
         self.symbol = symbol
         self.side = side.lower()
         self.amount = amount
@@ -35,6 +35,23 @@ class BaseOrder(ABC):
         self.create_time_ms = create_time_ms
         self.conditional_kind = conditional_kind
 
+    @property
+    def id(self) -> str:
+        """
+        ID Virtual/Prefijado para el Glosario y Frontend (Idempotente).
+        B = BasicOrder (Standard)
+        C = ConditionalOrder (Algo)
+        """
+        prefix = "B" if self.source == OrderSource.STANDARD else "C"
+        
+        # If raw_id already has the correct prefix, don't add it again.
+        if isinstance(self.raw_id, str) and self.raw_id.startswith(prefix):
+            return self.raw_id
+            
+        # If it starts with the WRONG prefix (rare), strip it first? 
+        # Actually, let's keep it simple: just ensure we don't double prefix.
+        return f"{prefix}{self.raw_id}"
+
     @abstractmethod
     def can_be_entry(self) -> bool:
         """Central business rule."""
@@ -42,7 +59,8 @@ class BaseOrder(ABC):
 
     def to_dict(self) -> dict:
         return {
-            "id": self.id,
+            "id": self.id, # Expone el ID prefijado para el Glosario
+            "raw_id": self.raw_id, # Mantiene fidelidad de origen
             "symbol": self.symbol,
             "side": self.side,
             "amount": self.amount,

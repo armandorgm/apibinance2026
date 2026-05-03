@@ -3,7 +3,7 @@ Core business logic for FIFO trade matching and PnL calculation.
 This is the heart of the system - matches buys and sells using FIFO algorithm.
 """
 from typing import List, Dict, Any, Tuple, Set, Optional
-from app.db.database import Fill, Trade, Order, get_session_direct
+from app.db.database import Fill, Trade, BasicOrder, ConditionalOrder, get_session_direct
 from sqlmodel import select, Session
 from collections import deque
 
@@ -58,6 +58,70 @@ class AtomicMatchStrategy(MatchStrategy):
             )
             
             matched_trades.append(tracker._format_trade_data(buy, sell, pnl_data))
+
+        return matched_trades
+
+class IntentMatchStrategy(MatchStrategy):
+    """
+    Intent-based Matcher (Atomic Forward Matcher).
+    Matches an Entry chronologically forward to an Exit of EXACT amount.
+    Ignores STOP LOSS logic explicitly to map only intended targets (Take Profit, Limits).
+    Consumed exits are fully popped/removed to prevent double spending.
+    """
+    def match(self, tracker: 'TradeTracker', fills: List[Fill], session: Optional[Session] = None) -> List[Dict[str, Any]]:
+        grouped_orders = tracker._group_fills_by_order(fills, session=session)
+        
+        # Filtrar descartando los STOP LOSS por regla de negocio
+        # Solo queremos emparejar INTENCIÓN (TP o Limit)
+        filtered_orders = []
+        for o in grouped_orders:
+            ot = (o.get('order_type') or '').upper()
+            
+            # Regla de descarte de SL (Stop Loss)
+            # Si el tipo contiene STOP pero NO contiene TAKE_PROFIT, lo tratamos como SL
+            is_sl = 'STOP' in ot and 'TAKE_PROFIT' not in ot
+            if not is_sl:
+                filtered_orders.append(o)
+
+        buys = [o for o in filtered_orders if o['side'] == 'buy']
+        sells = [o for o in filtered_orders if o['side'] == 'sell']
+        
+        matched_trades = []
+        used_sells = set()
+        
+        # Sort chronologically oldest first
+        buys.sort(key=lambda x: x['timestamp'])
+        sells.sort(key=lambda x: x['timestamp'])
+        
+        # Forward Matching: For each Buy, look for its perfect Exit in the future
+        for buy in buys:
+            if not buy.get('can_be_entry', True):
+                continue
+                
+            bracket_sell = None
+            for sell in sells:
+                # Regla de Consumo Único (Pop)
+                if sell['order_id'] in used_sells:
+                    continue
+                    
+                # Regla Temporal Hacia Adelante (La salida debe ser posterior o igual a la entrada)
+                if sell['timestamp'] < buy['timestamp']:
+                    continue
+                    
+                # Emparejamiento Atómico Estricto de Cantidad (con tolerancia para Nudging)
+                if abs(buy['amount'] - sell['amount']) < 1e-4:
+                    bracket_sell = sell
+                    used_sells.add(sell['order_id'])
+                    break  # Pop & Break
+                    
+            if bracket_sell:
+                pnl_data = tracker.calculate_pnl(
+                    entry_price=buy['price'], entry_amount=buy['amount'], entry_fee=buy['fee'],
+                    exit_price=bracket_sell['price'], exit_amount=bracket_sell['amount'], exit_fee=bracket_sell['fee'],
+                    entry_side='buy'
+                )
+                
+                matched_trades.append(tracker._format_trade_data(buy, bracket_sell, pnl_data))
 
         return matched_trades
 
@@ -148,6 +212,82 @@ class LIFOMatchStrategy(MatchStrategy):
         return matched_trades
 
 
+class LifecycleNettingStrategy(MatchStrategy):
+    """
+    Bio-Atomic Lifecycle (Binance Netting Mode).
+    Groups trades into "Life Cycles" that start and end at 0 balance.
+    Matches the entire cycle as a single block based on net volume.
+    """
+    def match(self, tracker: 'TradeTracker', fills: List[Fill], session: Optional[Session] = None) -> List[Dict[str, Any]]:
+        if not fills:
+            return []
+            
+        # We need a copy of fills because we might modify them (grouped_orders is fine too)
+        orders = tracker._group_fills_by_order(fills, session=session)
+        
+        matched_trades = []
+        current_cycle = []
+        current_balance = 0.0
+        
+        for o in orders:
+            current_cycle.append(o)
+            side_mult = 1.0 if o['side'] == 'buy' else -1.0
+            current_balance += o['amount'] * side_mult
+            
+            # Check if cycle closed (balance returns to 0)
+            if abs(current_balance) < 1e-8:
+                # Close Cycle
+                first_fill = current_cycle[0]
+                last_fill = current_cycle[-1]
+                
+                cycle_buys = [x for x in current_cycle if x['side'] == 'buy']
+                cycle_sells = [x for x in current_cycle if x['side'] == 'sell']
+                
+                total_buy_qty = sum(x['amount'] for x in cycle_buys)
+                total_sell_qty = sum(x['amount'] for x in cycle_sells)
+                
+                # Total Volume of the cycle is the amount realized
+                total_amount = max(total_buy_qty, total_sell_qty)
+                
+                # Weighted average prices
+                avg_buy_price = sum(x['price'] * x['amount'] for x in cycle_buys) / total_buy_qty if total_buy_qty > 0 else 0
+                avg_sell_price = sum(x['price'] * x['amount'] for x in cycle_sells) / total_sell_qty if total_sell_qty > 0 else 0
+                
+                total_buy_fee = sum(x['fee'] for x in cycle_buys)
+                total_sell_fee = sum(x['fee'] for x in cycle_sells)
+                
+                # In Netting mode, the cycle is 0-to-0.
+                # We determine the direction of the cycle by the side of the first fill.
+                cycle_side = first_fill['side']
+                
+                if cycle_side == 'buy':
+                    entry_price, exit_price = avg_buy_price, avg_sell_price
+                    entry_fee, exit_fee = total_buy_fee, total_sell_fee
+                else:
+                    # Short cycle
+                    entry_price, exit_price = avg_sell_price, avg_buy_price
+                    entry_fee, exit_fee = total_sell_fee, total_buy_fee
+                
+                pnl_data = tracker.calculate_pnl(
+                    entry_price=entry_price, entry_amount=total_amount, entry_fee=entry_fee,
+                    exit_price=exit_price, exit_amount=total_amount, exit_fee=exit_fee,
+                    entry_side=cycle_side
+                )
+                
+                # Build synthetic "Buy" and "Sell" order objects for the formatter
+                # using the timestamps of the cycle start and end.
+                synth_buy = {**first_fill, 'price': entry_price, 'amount': total_amount, 'fee': entry_fee, 'side': cycle_side}
+                synth_sell = {**last_fill, 'price': exit_price, 'amount': total_amount, 'fee': exit_fee, 'side': ('sell' if cycle_side == 'buy' else 'buy')}
+                
+                matched_trades.append(tracker._format_trade_data(synth_buy, synth_sell, pnl_data))
+                
+                # Reset
+                current_cycle = []
+                current_balance = 0.0
+
+        return matched_trades
+
+
 class TradeTracker:
     """
     Trade tracker that delegates matching logic to modular strategies.
@@ -190,7 +330,10 @@ class TradeTracker:
         """
         orders = {}
         for fill in fills:
-            oid = fill.order_id or f"manual_{fill.timestamp}_{fill.trade_id}"
+            oid = fill.order_id
+            if not oid or oid == "" or oid == "None":
+                oid = f"manual_{fill.timestamp}_{fill.trade_id}"
+            
             if oid not in orders:
                 orders[oid] = {
                     'order_id': oid,
@@ -205,10 +348,24 @@ class TradeTracker:
                     'fill_count': 0,
                     'order_type': None,
                     'can_be_entry': True,
-                    'originator': 'UNKNOWN'
+                    'originator': 'UNKNOWN',
+                    'fills': [] # Total transparency: store the raw fills
                 }
             
             o = orders[oid]
+            o['amount'] += fill.amount
+            o['cost'] += fill.amount * fill.price
+            o['fee'] += fill.fee
+            o['fill_count'] += 1
+            o['fills'].append({
+                'trade_id': fill.trade_id,
+                'order_id': fill.order_id,
+                'price': fill.price,
+                'amount': fill.amount,
+                'fee': fill.fee,
+                'datetime': fill.datetime.isoformat() if hasattr(fill.datetime, 'isoformat') else str(fill.datetime),
+                'role': 'Maker' # Defaulting or extracting from raw info if needed
+            })
             # Try to enrich with data from orders table if available
             # Note: In a real sync, we should fetch all relevant orders beforehand for performance
             if getattr(fill, "order_type", None) and o.get("order_type") is None:
@@ -218,10 +375,6 @@ class TradeTracker:
             if hasattr(fill, "originator"):
                 o["originator"] = fill.originator
                 
-            o['amount'] += fill.amount
-            o['cost'] += fill.cost
-            o['fee'] += fill.fee
-            o['fill_count'] += 1
             # Weighted average price
             if o['amount'] > 0:
                 o['price'] = o['cost'] / o['amount']
@@ -249,14 +402,24 @@ class TradeTracker:
 
                 if inner_session:
                     order_ids = list(orders.keys())
-                    statement = select(Order).where(Order.id.in_(order_ids))
-                    db_orders = inner_session.exec(statement).all()
-                    for db_o in db_orders:
+                    
+                    # Enrichment from BasicOrders
+                    stmt_basic = select(BasicOrder).where(BasicOrder.id.in_(order_ids))
+                    db_basic = inner_session.exec(stmt_basic).all()
+                    for db_o in db_basic:
                         if db_o.id in orders:
                             orders[db_o.id]['can_be_entry'] = db_o.can_be_entry
                             orders[db_o.id]['originator'] = db_o.originator
-                            if db_o.source == "ALGO":
-                                orders[db_o.id]['order_type'] = "ALGO"
+                            orders[db_o.id]['order_type'] = db_o.order_type
+                    
+                    # Enrichment from ConditionalOrders
+                    stmt_cond = select(ConditionalOrder).where(ConditionalOrder.id.in_(order_ids))
+                    db_cond = inner_session.exec(stmt_cond).all()
+                    for db_o in db_cond:
+                        if db_o.id in orders:
+                            orders[db_o.id]['can_be_entry'] = db_o.can_be_entry
+                            orders[db_o.id]['originator'] = db_o.originator
+                            orders[db_o.id]['order_type'] = "ALGO" # Normalize per glossary
                     
                     if should_close:
                         inner_session.close()
@@ -293,6 +456,8 @@ class TradeTracker:
             'exit_order_type': sell.get('order_type'),
             'originator': buy.get('originator', 'MANUAL'),
             'can_be_entry': buy.get('can_be_entry', True),
+            'entry_fills': buy.get('fills', []),
+            'exit_fills': sell.get('fills', []),
         }
 
     def match_trades(self, fills: List[Fill], strategy_name: str = "atomic_fifo", session: Optional[Session] = None) -> List[Dict[str, Any]]:
@@ -304,6 +469,8 @@ class TradeTracker:
             "lifo": LIFOMatchStrategy(),
             "atomic_fifo": AtomicMatchStrategy(is_fifo=True),
             "atomic_lifo": AtomicMatchStrategy(is_fifo=False),
+            "intent_fifo": IntentMatchStrategy(),
+            "binance_netting": LifecycleNettingStrategy(),
         }
         
         strategy = strategies.get(strategy_name.lower(), strategies["atomic_fifo"])
@@ -402,8 +569,11 @@ class TradeTracker:
                     'entry_fee': b['fee'],
                     'entry_timestamp': b['timestamp'],
                     'entry_datetime': b['datetime'],
+                    'entry_order_id': b.get('order_id'),
                     'entry_order_type': b.get('order_type'),
                     'originator': b.get('originator', 'MANUAL'),
+                    'entry_fills': b.get('fills', []), # Propagate for UI expansion
+                    'exit_fills': []
                 })
 
         # Unmatched sells → orphan sells (closed before history or data gap)
@@ -417,6 +587,7 @@ class TradeTracker:
                     'entry_fee': s['fee'],
                     'entry_timestamp': s['timestamp'],
                     'entry_datetime': s['datetime'],
+                    'entry_order_id': s.get('order_id'),
                     'entry_order_type': s.get('order_type'),
                     'is_orphan': True,  # Marker for UI
                 })

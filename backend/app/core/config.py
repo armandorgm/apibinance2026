@@ -13,7 +13,7 @@ class Settings(BaseSettings):
     BINANCE_API_SECRET: str = ""
     
     # Database
-    DATABASE_URL: str = "sqlite:///./binance_tracker.db"
+    DATABASE_URL: str = "sqlite:///./binance_tracker_v3.db"
     
     # CORS - stored as comma-separated string, converted to list via property
     CORS_ORIGINS: str = "http://localhost:3000,http://localhost:3001"
@@ -38,6 +38,7 @@ class Settings(BaseSettings):
     class Config:
         env_file = ".env"
         case_sensitive = True
+        extra = "allow"
 
 
 settings = Settings()

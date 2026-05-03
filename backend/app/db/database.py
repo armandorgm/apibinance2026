@@ -20,14 +20,14 @@ class OrderSource(str, Enum):
     STANDARD = "STANDARD"
     ALGO = "ALGO"
 
-class Order(SQLModel, table=True):
+class BasicOrder(SQLModel, table=True):
     """
-    Unified Order model (SOLID).
-    Stores intent and originator metadata.
+    Standard Binance Order (LIMIT/MARKET).
+    Faithful source from CCXT's fetch_order.
     """
-    __tablename__ = "orders"
+    __tablename__ = "basic_orders"
     
-    id: str = Field(primary_key=True)  # Binance orderId or algoId
+    id: str = Field(primary_key=True)  # Raw Binance orderId
     symbol: str = Field(index=True)
     side: str  # 'buy' or 'sell'
     amount: float
@@ -35,9 +35,33 @@ class Order(SQLModel, table=True):
     status: str
     datetime: datetime
     originator: Originator
-    source: OrderSource
+    source: OrderSource = Field(default=OrderSource.STANDARD)
     can_be_entry: bool = True
     is_bot_logged: bool = False
+    order_type: str = "LIMIT"
+    created_at: datetime = Field(default_factory=datetime.utcnow)
+
+class ConditionalOrder(SQLModel, table=True):
+    """
+    Binance Algo Service Order (TP/SL/Trailing).
+    Faithful source from Binance Algo API.
+    """
+    __tablename__ = "conditional_orders"
+    
+    id: str = Field(primary_key=True)  # Raw Binance algoId
+    symbol: str = Field(index=True)
+    side: str
+    amount: float
+    price: float
+    status: str
+    datetime: datetime
+    originator: Originator
+    source: OrderSource = Field(default=OrderSource.ALGO)
+    can_be_entry: bool = False
+    is_bot_logged: bool = False
+    order_type: str = "STOP_MARKET"
+    create_time_ms: Optional[int] = None
+    conditional_kind: Optional[str] = None # take_profit, stop_loss, trailing
     created_at: datetime = Field(default_factory=datetime.utcnow)
 
 class Fill(SQLModel, table=True):
@@ -58,7 +82,7 @@ class Fill(SQLModel, table=True):
     fee_currency: str
     timestamp: int  # Unix timestamp in milliseconds
     datetime: datetime
-    order_id: str = Field(foreign_key="orders.id", index=True) # Mandatory FK
+    order_id: str = Field(index=True) # ID crudo (se busca en basic o conditional via app logic)
     order_type: Optional[str] = None # Standard type (LIMIT/MARKET)
     created_at: datetime = Field(default_factory=datetime.utcnow)
 
@@ -132,6 +156,69 @@ class BotConfig(SQLModel, table=True):
     updated_at: datetime = Field(default_factory=datetime.utcnow)
 
 
+class BotPipeline(SQLModel, table=True):
+    """
+    User-defined sequence of conditions and actions (Pipelines).
+    Supports Open/Closed extension via JSON configuration.
+    """
+    __tablename__ = "bot_pipelines"
+    
+    id: Optional[int] = Field(default=None, primary_key=True)
+    name: str = Field(index=True)
+    symbol: str = Field(index=True)
+    is_active: bool = Field(default=True)
+    trigger_event: str = Field(default="POLLING") # POLLING, ON_TICK, etc.
+    pipeline_config: str = Field(default="{}") # JSON string containing the Nodes/Steps
+    created_at: datetime = Field(default_factory=datetime.utcnow)
+    updated_at: datetime = Field(default_factory=datetime.utcnow)
+
+
+class BotPipelineProcess(SQLModel, table=True):
+    """
+    State tracking for active pipeline executions like Adaptive OTO Scaling.
+    Cleaned up automatically once the final order is placed.
+    """
+    __tablename__ = "bot_pipeline_processes"
+    
+    id: Optional[int] = Field(default=None, primary_key=True)
+    pipeline_id: int = Field(index=True)
+    symbol: str = Field(index=True)
+    
+    # Mother order tracking
+    entry_order_id: Optional[str] = None
+    side: str = Field(default="buy")
+    amount: float = Field(default=0.0)
+    
+    # Prices to determine when to move
+    last_tick_price: Optional[float] = None # Price of market when we decided to move
+    last_order_price: Optional[float] = None # Price truly sent to Binance
+    
+    # Status of the session: 'CHASING', 'WAITING_FILL', 'COMPLETED', 'ABORTED'
+    status: str = Field(default="CHASING")
+    
+    # Granular tracking for UI infographic
+    sub_status: str = Field(default="INIT") # INIT, CHASING, WAITING_FILL, PLACING_TP, DONE, ABORTED
+    finished_at: Optional[datetime] = None
+    
+    # Custom chasing parameters (Overriding defaults)
+    custom_cooldown: Optional[int] = None
+    custom_threshold: Optional[float] = None
+    custom_profit_pc: Optional[float] = None
+    # Plugin Routing: identifies which service handles this process 
+    # (e.g. 'CHASE_V2', 'NATIVE_OTO', 'ADAPTIVE_OTO')
+    handler_type: str = Field(default="CHASE_V2", index=True)
+    
+    # Retry tracking for Adaptive OTO
+    retry_count: int = Field(default=0)
+
+    # Identifies which service launched this process (e.g. 'REACTOR', 'SCALER_BOT', 'MANUAL')
+    originator: Optional[str] = Field(default=None, index=True)
+
+    created_at: datetime = Field(default_factory=datetime.utcnow)
+    updated_at: datetime = Field(default_factory=datetime.utcnow)
+
+
+
 class ExchangeLog(SQLModel, table=True):
     """
     Global log for all raw exchange requests and responses.
@@ -148,11 +235,39 @@ class ExchangeLog(SQLModel, table=True):
     created_at: datetime = Field(default_factory=datetime.utcnow)
 
 
-# Database engine
+class ScalerBotConfig(SQLModel, table=True):
+    """
+    Persists the ScheduledScalerBot configuration across backend restarts.
+    One row per symbol — UPSERT semantics via symbol unique index.
+    Designed by AI Agent — 2026-04-25.
+    """
+    __tablename__ = "scaler_bot_config"
+
+    id: Optional[int] = Field(default=None, primary_key=True)
+    symbol: str = Field(index=True, unique=True)
+    is_enabled: bool = Field(default=False)
+    default_profit_pc: float = Field(default=0.005)   # Fallback when no TP found
+    interval_hours: float = Field(default=8.0)        # Configurable interval
+
+    # Runtime stats (updated each cycle)
+    cycles_executed: int = Field(default=0)
+    last_execution_at: Optional[datetime] = None
+    last_cycle_side: Optional[str] = None             # last inferred side
+    last_profit_pc_used: Optional[float] = None       # last computed profit_pc
+
+    created_at: datetime = Field(default_factory=datetime.utcnow)
+    updated_at: datetime = Field(default_factory=datetime.utcnow)
+
+
+
 engine = create_engine(
     settings.DATABASE_URL,
     connect_args={"check_same_thread": False} if "sqlite" in settings.DATABASE_URL else {},
-    echo=False
+    echo=False,
+    pool_size=50,
+    max_overflow=100,
+    pool_recycle=3600,
+    pool_pre_ping=True
 )
 
 def create_db_and_tables():

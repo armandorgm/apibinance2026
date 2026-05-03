@@ -72,9 +72,9 @@ def sync_trade_order_metadata_from_fills(symbol: str, logic: str) -> int:
                 if (
                     tr.entry_timestamp == m["entry_timestamp"]
                     and tr.exit_timestamp == m["exit_timestamp"]
-                    and abs(tr.entry_price - m["entry_price"]) < 1e-8
-                    and abs(tr.exit_price - m["exit_price"]) < 1e-8
-                    and abs(tr.entry_amount - m["entry_amount"]) < 1e-6
+                    and abs(tr.entry_price - m["entry_price"]) < 1e-6
+                    and abs(tr.exit_price - m["exit_price"]) < 1e-6
+                    and abs(tr.entry_amount - m["entry_amount"]) < 1e-4
                 ):
                     tr.entry_order_id = m.get("entry_order_id")
                     tr.exit_order_id = m.get("exit_order_id")

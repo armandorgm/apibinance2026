@@ -7,9 +7,12 @@ import { SyncButton } from '@/components/sync-button'
 import { StatsCard } from '@/components/stats-card'
 import { BotMonitor } from '@/components/bot-monitor'
 import { BalanceWidget } from '@/components/balance-widget'
+import { OpenTradesTable } from '@/components/open-trades-table'
+import { ManualActions } from '@/components/manual-actions'
 import { useTrades, useStats, useSyncHistoricalTrades } from '@/hooks/use-trades'
 import { formatPrice } from '@/lib/utils'
 import Link from 'next/link'
+import { Zap } from 'lucide-react'
 
 export default function Home() {
   const [symbol, setSymbol] = useState('1000PEPEUSDC')
@@ -55,24 +58,6 @@ export default function Home() {
             </p>
           </div>
           <div className="flex gap-2">
-            <a
-              href="/orders"
-              className="flex items-center gap-2 px-4 py-2 bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 hover:bg-gray-50 dark:hover:bg-gray-700/50 text-gray-700 dark:text-gray-300 rounded-xl font-bold transition-all shadow-sm active:scale-95"
-            >
-              📑 Monitor Órdenes
-            </a>
-            <Link href="/exchange-logs" className="flex items-center gap-2 px-4 py-2 bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 hover:bg-gray-50 dark:hover:bg-gray-700/50 text-gray-700 dark:text-gray-300 rounded-xl font-bold transition-all shadow-sm active:scale-95">
-              📡 Logs Exchange
-            </Link>
-            <Link href="/api-tester" className="flex items-center gap-2 px-4 py-2 bg-white dark:bg-emerald-900 border border-emerald-200 dark:border-emerald-700 hover:bg-emerald-50 dark:hover:bg-emerald-800/80 text-emerald-700 dark:text-emerald-300 rounded-xl font-bold transition-all shadow-sm active:scale-95">
-              🧪 API Tester
-            </Link>
-            <a
-              href="/settings"
-              className="flex items-center gap-2 px-4 py-2 bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 hover:bg-gray-50 dark:hover:bg-gray-700/50 text-gray-700 dark:text-gray-300 rounded-xl font-bold transition-all shadow-sm active:scale-95"
-            >
-              ⚙️ Configurar Bot
-            </a>
           </div>
         </div>
 
@@ -189,13 +174,18 @@ export default function Home() {
           </div>
         )}
 
+        {/* Manual Actions - Removed as migrated to /actions */}
+        {/* <div className="mb-8">
+          <ManualActions symbol={symbol} />
+        </div> */}
+
         {/* Bot Autonomous Monitoring and Balances */}
         <div className="grid grid-cols-1 xl:grid-cols-3 gap-6 mb-8">
           <div className="xl:col-span-1">
             <BalanceWidget />
           </div>
           <div className="xl:col-span-2">
-            <BotMonitor />
+            <BotMonitor symbol={symbol} />
           </div>
         </div>
 
@@ -209,11 +199,16 @@ export default function Home() {
           </div>
         )}
 
+        {/* Open Trades Section */}
+        {trades && trades.length > 0 && (
+          <OpenTradesTable trades={trades} />
+        )}
+
         {/* Trade Table */}
         <div className="bg-white dark:bg-gray-800 rounded-lg shadow-lg overflow-hidden">
           <div className="p-6 border-b border-gray-200 dark:border-gray-700">
             <h2 className="text-2xl font-semibold text-gray-900 dark:text-white">
-              Historial de Operaciones
+              Historial de Posiciones
             </h2>
           </div>
           {isLoading ? (

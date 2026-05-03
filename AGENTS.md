@@ -61,6 +61,7 @@ apibinance2026/
 ├── .agents/                          # Antigravity-specific agents/workflows/skills
 │   └── workflows/                    # Slash command workflows
 │       ├── gitflow-process.md        # /gitflow-process
+│       ├── implementation-safety.md  # /implementation-safety
 │       └── orquestador.md            # /orquestador
 ├── .cursorrules                      # Cursor compat redirect → see AGENTS.md
 ├── .gemini/gemini.md                 # Antigravity compat redirect → see AGENTS.md
@@ -138,17 +139,37 @@ Every AI agent working in this repository MUST follow this lifecycle:
 
 ### 1. Execution Plan Lifecycle (`.temp/` folder)
 
-All complex procedures require mandatory real-time traceability inside `.temp/`:
+All complex procedures require **milestone-based traceability** inside `.temp/PLAN_EJECUCION.md`. This file is a **cumulative, multi-conversation log** of active plans.
 
-- **Before (Initial Phase):** Generate `PLAN_EJECUCION.md` with roadmap and objectives.
-- **During (Progress Phase):** Update the file with change logs, intercepted errors, and strategy adjustments.
-- **After (Closing Phase):** Record the final system state.
+- **Non-Destructive Management**: 
+    - **CRITICAL**: No agent can overwrite or delete `PLAN_EJECUCION.md`. You must only **append** or **edit** the section created by your specific conversation.
+    - **Separator**: Use `---` as a horizontal separator between different conversation sections.
+    - **Persistence**: Each section persists until its creator (agent/conversation) finishes the task or the user manually deletes it.
+    - **Foreign Plan Edit**: If you *must* edit or delete a plan from a different conversation, you MUST ask the user for permission with exactly: *"AUTORIZA A LA EDICION/BORRADO DE UN PLAN AJENO A LA CONVERSACION?"*
 
-**User Sovereignty:** On completion, the agent MUST NOT delete records. It will ask the user:
-  - a) Delete temporaries.
-  - b) Execute Repair Plan (fix failures).
-  - c) Execute Modification Plan (adjust solution).
-  - d) Execute Restoration Plan (revert to last stable step).
+- **Standardized Template**: Every new plan section must follow this structure:
+    ```markdown
+    📋 PLANTILLA: PLAN DE EJECUCIÓN - [NOMBRE DEL PROYECTO/SISTEMA]
+    ID de Conversación: [UUID-O-ID-DE-CHAT]
+    Estado: 🟢 [EN PROGRESO / PENDIENTE / FINALIZADO]
+    Rama: [tipo]/[nombre-de-la-rama]
+
+    🎯 Objetivos
+    [Breve descripción]
+
+    🚀 Hoja de Roadmap
+    Fase 1: ...
+    Fase 2: ...
+
+    📝 Logs de Progreso
+    YYYY-MM-DD: ...
+    ```
+
+- **Before (Initial Phase):** Append your plan to `PLAN_EJECUCION.md` detailing the roadmap and objectives.
+- **During (Progress Phase):** Update **your section** at key milestones.
+- **After (Closing Phase):** Update your section to `FINALIZADO` and record the final system state.
+
+**User Sovereignty:** On completion, follow the Exit Protocol below to manage your section.
 
 ### 2. Context Switching & Branch Management
 
@@ -183,11 +204,37 @@ Once the solution is validated and temporaries are closed, generate a report in 
 - **Naming:** `YYYY-MM-DD-short-description.md`
 - **Structure:** Problem, Solution (including mention of tests), Impact.
 - **Language:** Use ownership verbs (Led, Designed, Implemented, Launched).
+- **Technical Registry (Command Feed):** Update the KI `technical-command-registry` with successful terminal commands and environmental gotchas to prevent repetitive execution errors.
 
 ### 6. Exit Protocol
 
-On completion, the agent MUST emit:
-> *"The execution cycle has concluded. Logs in `.temp/` and report in `docs/incidents/`. Branch/stash state has been managed as needed. Do you want to delete temporaries or apply a repair/modification/restoration plan?"*
+On completion of your specific plan, the agent MUST emit:
+> *"The execution cycle has concluded. Logs in `.temp/` (your section) and report in `docs/incidents/`. Branch/stash state has been managed as needed. Do you want to delete your plan section from temporaries or apply a repair/modification/restoration plan?"*
+
+### 7. Implementation Safety Standard (New)
+
+To prevent breaking existing code during feature expansion:
+
+- **Impact Scan**: Always use `python scripts/impact_analyzer.py --impact <file>` to find the full dependency chain and "blast radius" before modifying its interface. Run `python scripts/impact_analyzer.py --scan` to refresh the graph if multiple files were added.
+- **Frontend-Backend Sync**: If an API endpoint is changed, the corresponding React Query hook and fetcher MUST be updated in the same PR.
+- **SQLite Migrations**: If `database.py` models change, provide a script to add columns to the existing SQLite DB with sensible defaults.
+- **Indentation & Syntax**: Always run a "dry run" or syntax check (parsing) after every modification. Parse errors are unacceptable.
+
+---
+
+## Prevención de Regresiones y Flujo de Trabajo Seguro
+
+1. **Fase de Análisis de Impacto (Obligatoria):** Antes de generar o escribir código para una nueva funcionalidad, el agente DEBE analizar el proyecto actual, identificar qué módulos o funciones podrían verse afectados, listar las dependencias y ESPERAR la confirmación del usuario antes de proceder con la escritura.
+2. **Principio de Integridad:** Cualquier modificación debe respetar rigurosamente las firmas de las funciones existentes. Si un cambio requiere modificar un módulo dependiente (por ejemplo, alterar una interfaz que rompa la visualización en el frontend), debe notificarse explícitamente y requerir autorización antes de ejecutar el cambio.
+3. **Modularización Extrema (Divide y Vencerás):** Obligatorio el uso de interfaces o tipos estrictos. Si se necesita alterar un objeto, función o componente que ya está en uso en otra parte del proyecto, se debe PRIORIZAR extender la funcionalidad en lugar de mutar y romper la original.
+4. **Validación en Modo Planning:** Todo plan de implementación para nuevas características debe incluir un plan de pruebas integrado. El agente debe listar qué pruebas manuales o puntos de chequeo se deben verificar en los módulos adyacentes para asegurar que sigan funcionando correctamente tras la integración.
+
+---
+
+## Environment Limitations & Tooling Issues
+
+**CRITICAL (Added: 2026-04-06T05:45Z):**
+- **Sandboxing Error on Windows (`SafeToAutoRun` in Antigravity):** Do NOT run terminal commands using `SafeToAutoRun=true` for internal workspace checks or git maneuvers on this local Windows environment if they fail with `"failed to set up sandbox: sandboxing is not supported on Windows"`. Use `SafeToAutoRun=false` and request user permission via UI, or explain what the user should execute. Using it continuously triggers a 6-hour system suspension.
 
 ---
 
@@ -197,15 +244,16 @@ Full workflow defined in `.agents/workflows/gitflow-process.md` (slash command: 
 
 **Quick reference:**
 
-1. Always start from `develop`.
-2. Create feature branch: `git checkout -b feature/name develop`.
-3. Work on your feature.
-4. Commit changes: `git add . && git commit -m "feat: description"`.
-5. Update `docs/PROJECT_MAP.md` incrementally.
-6. Merge back with non-fast-forward: `git checkout develop && git merge --no-ff feature/name`.
-7. Archive `.temp/` artifacts to `docs/logs/feature-name/` before closing.
-8. Delete the feature branch: `git branch -d feature/name`.
-9. For hotfixes, branch from `main` using `hotfix/name`.
+1. **Estado Inicial**: Partir desde `develop`.
+2. **Rama de Feature**: `git checkout -b feature/nombre-descriptivo develop`.
+3. **Desarrollo y Validación**: 
+   - Implementar cambios.
+   - **Solicitar aprobación de éxito/fallo** al usuario y documentar en `PLAN_EJECUCION.md`.
+4. **Commit**: `git add . && git commit -m "feat: descripción (via AI Agent)"`.
+5. **Knowledge Feed**: Transformar scripts temporales e investigación en documentos permanentes en `docs/research/` o `docs/knowledge/` antes de limpiar.
+6. **Project Map**: Actualizar `docs/PROJECT_MAP.md`.
+7. **Merge**: `git checkout develop && git merge --no-ff feature/nombre-descriptivo`.
+8. **Archivo y Limpieza**: Mover logs de `.temp/` a `docs/logs/` y eliminar la rama.
 
 **Important:** Always consult `docs/STANDARDS.md` before closing a task.
 
@@ -271,4 +319,4 @@ To avoid massive scans and facilitate onboarding of new agents or conversations:
 
 ---
 
-*Last updated: 2026-04-04 | Maintained by AI agents — update incrementally, never overwrite whole sections.*
+*Last updated: 2026-04-16 | Maintained by AI agents — update incrementally, never overwrite whole sections.*
