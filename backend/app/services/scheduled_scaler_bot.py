@@ -255,13 +255,32 @@ class ScheduledScalerBot:
                 symbol, binance_native
             )
             if side is None:
+                # Only genuine failures reach here: TP side mismatch
                 logger.warning(
-                    f"[SCALER] Side inference failed for {symbol}, skipping cycle."
+                    f"[SCALER] Side inference failed for {symbol}, skipping cycle. "
+                    f"Reason: TP side mismatch — check logs above for detail."
                 )
                 await self._log_signal(
-                    symbol, "INFER", "HOLD", success=False, error="Side inference failed (no position or TP mismatch)"
+                    symbol, "INFER", "HOLD", success=False,
+                    error="Side inference failed (TP side mismatch)"
                 )
                 return
+
+            # ── Step 1b: Price guard ──────────────────────────────
+            # Flat-fallback may return price=0.0 if ticker failed during _infer_side_and_tp.
+            # fetch_ticker() is the async CCXT method; get_ticker() is sync in-memory cache only.
+            if current_price <= 0:
+                try:
+                    ticker = await exchange_manager.fetch_ticker(symbol)
+                    current_price = float(ticker.get("last") or ticker.get("close") or 0.0)
+                    logger.info(f"[SCALER] Price recovered from ticker: {current_price}")
+                except Exception as e:
+                    logger.warning(f"[SCALER] Ticker fetch failed: {e}")
+                if current_price <= 0:
+                    logger.warning(
+                        f"[SCALER] Cannot determine price for {symbol} (price=0). Skipping cycle."
+                    )
+                    return
 
             # ── Step 2: Balance check ─────────────────────────────
             quote_asset = _extract_quote_asset(symbol)
@@ -412,12 +431,22 @@ class ScheduledScalerBot:
                     break
             
             if not target_pos:
-                logger.warning(f"[SCALER] No open position found for {symbol} (Native: {native_symbol})")
-                return None, 0.0, None, 1.0
-                
+                # No position record at all → treat as flat → LONG fallback
+                logger.info(
+                    f"[SCALER] No position record for {symbol} (Native: {native_symbol}). "
+                    f"Flat assumed → Fallback to LONG (side=buy)."
+                )
+                current_price_fb = 0.0
+                try:
+                    ticker = await exchange_manager.get_ticker(symbol)
+                    current_price_fb = float(ticker.get("last") or ticker.get("close") or 0.0)
+                except Exception:
+                    pass
+                return "buy", current_price_fb, None, 1.0
+
             position_amt = float(target_pos.get("positionAmt") or 0.0)
             current_price = float(target_pos.get("markPrice") or 0.0)
-            
+
             # Robust leverage extraction for Native source
             leverage = float(target_pos.get("leverage") or 0.0)
             if leverage <= 1.0:
@@ -430,8 +459,12 @@ class ScheduledScalerBot:
             logger.info(f"[SCALER] Leverage from native engine for {native_symbol}: {leverage}x")
 
         if position_amt == 0.0:
-            logger.info(f"[SCALER] Flat position for {symbol}, no side to infer. (Leverage: {leverage}x)")
-            return None, current_price, None, leverage
+            # positionAmt is exactly 0 → flat → LONG fallback
+            logger.info(
+                f"[SCALER] Flat position for {symbol} (positionAmt=0). "
+                f"Fallback to LONG (side=buy). Leverage={leverage}x."
+            )
+            return "buy", current_price, None, leverage
 
         position_side = "buy" if position_amt > 0 else "sell"
 

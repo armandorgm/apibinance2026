@@ -458,8 +458,12 @@ class AdaptiveOTOScalingAction(BaseAction):
             
             # Reactor Bot B Hook
             from app.services.close_fill_reactor import close_fill_reactor
-            import asyncio
-            asyncio.create_task(close_fill_reactor.on_position_closed(process))
+            # V5.9.44: Extract primitives BEFORE session closes to avoid DetachedInstanceError
+            _closed_symbol = process.symbol
+            _closed_at = process.created_at
+            asyncio.create_task(close_fill_reactor.on_position_closed(
+                symbol=_closed_symbol, created_at=_closed_at
+            ))
             
             logger.info(f"[CHASE] Completed OTO loop for {symbol}. TP at {price_str}, order ID: {tp_order.get('id')}")
 

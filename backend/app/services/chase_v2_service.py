@@ -306,8 +306,13 @@ class ChaseV2Service:
                 stream_manager.unsubscribe(symbol)
 
                 # ── Bot B hook: emit to CloseFillReactor (non-blocking) ──
+                # V5.9.44: Extract primitives BEFORE session closes to avoid DetachedInstanceError
                 from app.services.close_fill_reactor import close_fill_reactor
-                asyncio.create_task(close_fill_reactor.on_position_closed(process))
+                _closed_symbol = process.symbol
+                _closed_at = process.created_at
+                asyncio.create_task(close_fill_reactor.on_position_closed(
+                    symbol=_closed_symbol, created_at=_closed_at
+                ))
             else:
                 error = res.get("error", "Unknown error")
                 logger.error(f"[CHASE V2 SERVICE] TP placement failed: {error}")

@@ -10,9 +10,17 @@ SOLID compliance:
   - O: New behaviors (e.g. different cooldown strategies) extend, not modify.
   - D: Lazy imports break circular dependency with ChaseV2Service.
 
+V5.9.44 — DetachedInstanceError fix:
+  on_position_closed() now receives plain primitives (symbol, created_at)
+  instead of the SQLAlchemy ORM object. This prevents SQLAlchemy from attempting
+  an attribute refresh on a session-less (detached) instance when the async task
+  fires after the DB session context has already closed.
+
 Flow:
   ChaseV2Service.handle_fill()
-    └─> asyncio.create_task(reactor.on_position_closed(process))
+    └─> asyncio.create_task(
+            reactor.on_position_closed(symbol=process.symbol,
+                                        created_at=process.created_at))
           └─> asyncio.sleep(cooldown)
                 └─> chase_v2_service.init_chase(...)
 """
@@ -22,7 +30,6 @@ from datetime import datetime
 from typing import Optional
 
 from app.core.logger import logger
-from app.db.database import BotPipelineProcess
 
 
 class CloseFillReactor:
@@ -100,17 +107,23 @@ class CloseFillReactor:
     # Event hook — called by ChaseV2Service.handle_fill()
     # ─────────────────────────────────────────────────────────────
 
-    async def on_position_closed(self, process: BotPipelineProcess) -> None:
+    async def on_position_closed(self, symbol: str, created_at: Optional[datetime] = None) -> None:
         """
         Async hook invoked when a Chase V2 cycle completes (TP placed successfully).
-        Guards: reactor must be enabled and process symbol must match.
+
+        V5.9.44: Accepts primitive values instead of the ORM object to prevent
+        DetachedInstanceError when the async task fires after the DB session closes.
+
+        Args:
+            symbol:     CCXT-normalised symbol of the closed process.
+            created_at: UTC datetime when the process was created (for cooldown calc).
         """
         if not self.is_enabled:
             return
 
-        if process.symbol != self.enabled_symbol:
+        if symbol != self.enabled_symbol:
             logger.debug(
-                f"[REACTOR] Skipping — closed symbol {process.symbol} "
+                f"[REACTOR] Skipping — closed symbol {symbol} "
                 f"does not match enabled symbol {self.enabled_symbol}."
             )
             return
@@ -121,21 +134,23 @@ class CloseFillReactor:
             logger.warning("[REACTOR] Previous pending task cancelled (new cycle started).")
 
         self._pending_task = asyncio.create_task(
-            self._delayed_chase(process)
+            self._delayed_chase(symbol=symbol, created_at=created_at)
         )
 
     # ─────────────────────────────────────────────────────────────
     # Internal logic
     # ─────────────────────────────────────────────────────────────
 
-    def _calculate_cooldown(self, process: BotPipelineProcess) -> float:
+    def _calculate_cooldown(self, created_at: Optional[datetime]) -> float:
         """
         Calculates cooldown = 50% of the closed cycle duration.
-        Uses process.created_at as cycle start and utcnow() as cycle end.
+        Uses created_at as cycle start and utcnow() as cycle end.
         Minimum floor: 30 seconds. Maximum cap: 3600 seconds (1 hour).
+
+        V5.9.44: Accepts plain datetime primitive instead of ORM object.
         """
         now = datetime.utcnow()
-        start = process.created_at or now
+        start = created_at or now
         duration_seconds = max((now - start).total_seconds(), 0.0)
 
         self.last_cycle_duration_seconds = duration_seconds
@@ -148,16 +163,17 @@ class CloseFillReactor:
         )
         return cooldown
 
-    async def _delayed_chase(self, process: BotPipelineProcess) -> None:
+    async def _delayed_chase(self, symbol: str, created_at: Optional[datetime] = None) -> None:
         """
         Waits for the calculated cooldown, then fires a new Chase V2
         with the same parameters as the completed process.
+
+        V5.9.44: Accepts plain primitives instead of ORM object.
         """
         try:
-            cooldown = self._calculate_cooldown(process)
+            cooldown = self._calculate_cooldown(created_at)
             self.last_cooldown_seconds = cooldown
 
-            symbol = process.symbol
             side = self.side          # Always use the value configured at enable-time
             amount = self.amount      # Always use the value configured at enable-time
             profit_pc = self.profit_pc

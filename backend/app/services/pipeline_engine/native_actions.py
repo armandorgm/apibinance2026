@@ -266,7 +266,12 @@ class NativeOTOScalingAction(BaseAction):
 
                 # Reactor Bot B Hook
                 from app.services.close_fill_reactor import close_fill_reactor
-                asyncio.create_task(close_fill_reactor.on_position_closed(process))
+                # V5.9.44: Extract primitives BEFORE session closes to avoid DetachedInstanceError
+                _closed_symbol = process.symbol
+                _closed_at = process.created_at
+                asyncio.create_task(close_fill_reactor.on_position_closed(
+                    symbol=_closed_symbol, created_at=_closed_at
+                ))
             else:
 
                 error = res.get("error", "Unknown error")
