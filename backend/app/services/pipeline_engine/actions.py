@@ -410,6 +410,20 @@ class AdaptiveOTOScalingAction(BaseAction):
                     session.commit()
                     return
 
+            # V5.9.49: Position validation barrier (Anti-2022 Guard)
+            if not await exchange_manager.has_open_position(process.symbol):
+                logger.warning(f"[CHASE] Aborting TP placement for {process.symbol}: No open position found on exchange. Marking as ORPHAN.")
+                process.status = "ABORTED"
+                process.sub_status = "ORPHAN_NO_POSITION"
+                process.finished_at = datetime.utcnow()
+                session.add(process)
+                session.commit()
+                
+                # Cleanup
+                from app.core.stream_service import stream_manager
+                await stream_manager.unsubscribe(process.symbol)
+                return
+
             # Apply Precision
             qty_str = await exchange_manager.amount_to_precision(process.symbol, float(filled_qty))
             price_str = await exchange_manager.price_to_precision(process.symbol, float(tp_price))

@@ -153,11 +153,15 @@ class StreamManager:
                         
                         if status == "closed":
                             if filled > 0:
-                                print(f"[STREAM] Hard-sync: Order {p.entry_order_id} is FILLED. Advancing.")
-                                handler_key = "ADAPTIVE_OTO_V2" if "NATIVE" in (p.sub_status or "") else "ADAPTIVE_OTO"
-                                handler = ACTIONS.get(handler_key)
-                                if handler:
-                                    await handler.handle_fill(p, session)
+                                # V5.9.47: Skip if process is already finalized — prevents -2022
+                                if p.status in ("COMPLETED", "ABORTED"):
+                                    print(f"[STREAM] Hard-sync: Order {p.entry_order_id} already {p.status}. Skipping handle_fill.")
+                                else:
+                                    print(f"[STREAM] Hard-sync: Order {p.entry_order_id} is FILLED. Advancing.")
+                                    handler_key = "ADAPTIVE_OTO_V2" if "NATIVE" in (p.sub_status or "") else "ADAPTIVE_OTO"
+                                    handler = ACTIONS.get(handler_key)
+                                    if handler:
+                                        await handler.handle_fill(p, session)
                             else:
                                 print(f"[STREAM] Hard-sync: Order {p.entry_order_id} is EXPIRED/CANCELED. Clearing ID.")
                                 p.entry_order_id = None

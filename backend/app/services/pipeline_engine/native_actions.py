@@ -211,6 +211,19 @@ class NativeOTOScalingAction(BaseAction):
     async def handle_fill(process, session, profit_pc: float = None, executed_qty: float = None):
         """Called when entry is filled. Places Native TP with reduceOnly. (V5.9.28)"""
         try:
+            # V5.9.47: Idempotency guard — prevent duplicate TP placement when Hard-Sync
+            # and WebSocket stream both trigger handle_fill for the same fill event.
+            try:
+                session.refresh(process)
+            except Exception:
+                pass
+            if process.status == "COMPLETED":
+                logger.info(
+                    f"[CHASE V2] handle_fill skipped: process {process.id} "
+                    f"already COMPLETED (TP was already placed). Ignoring duplicate call."
+                )
+                return
+
             # V5.9.28: Contract Symmetry Sync
             # If we have the real executed qty from stream, use it and persist it.
             if executed_qty is not None and executed_qty > 0:
@@ -276,6 +289,24 @@ class NativeOTOScalingAction(BaseAction):
 
                 error = res.get("error", "Unknown error")
                 logger.error(f"[CHASE V2] TP placement failed: {error}")
+                
+                # V5.9.50: Reactive Position Guard (Try-Before-Check)
+                if "-2022" in error or "reduceonly" in error.lower():
+                    if not await exchange_manager.has_open_position(symbol):
+                        logger.warning(f"[CHASE V2] TP rejected (-2022) and NO position found for {symbol}. Marking as ORPHAN.")
+                        process.status = "ABORTED"
+                        process.sub_status = "ORPHAN_NO_POSITION"
+                        session.commit()
+                        
+                        from app.services.bot_service import bot_instance
+                        bot_instance.engine.unregister_chase(symbol)
+                        
+                        from app.core.stream_service import stream_manager
+                        await stream_manager.unsubscribe(symbol)
+                        return
+                    else:
+                        logger.error(f"[CHASE V2] TP rejected (-2022) but position EXISTS for {symbol}. Manual intervention may be required.")
+
                 if "Duplicate" in error or "-2012" in error:
                     process.status = "COMPLETED"
                     session.commit()

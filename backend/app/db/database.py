@@ -260,6 +260,25 @@ class ScalerBotConfig(SQLModel, table=True):
 
 
 
+
+class ReactorConfig(SQLModel, table=True):
+    """
+    Persists the CloseFillReactor (Bot B) configuration across backend restarts.
+    Single-row table — singleton pattern enforced by id=1 upsert.
+    Designed by AI Agent — 2026-05-04 (V5.9.46).
+    """
+    __tablename__ = "reactor_config"
+
+    id: Optional[int] = Field(default=None, primary_key=True)
+    is_enabled: bool = Field(default=False)
+    symbol: Optional[str] = Field(default=None)
+    side: str = Field(default="buy")
+    amount: float = Field(default=0.0)
+    profit_pc: float = Field(default=0.005)
+
+    updated_at: datetime = Field(default_factory=datetime.utcnow)
+
+
 engine = create_engine(
     settings.DATABASE_URL,
     connect_args={"check_same_thread": False} if "sqlite" in settings.DATABASE_URL else {},

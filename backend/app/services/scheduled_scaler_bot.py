@@ -433,15 +433,16 @@ class ScheduledScalerBot:
             if not target_pos:
                 # No position record at all → treat as flat → LONG fallback
                 logger.info(
-                    f"[SCALER] No position record for {symbol} (Native: {native_symbol}). "
-                    f"Flat assumed → Fallback to LONG (side=buy)."
+                    f"[SCALER] No position record found via CCXT or Native for {symbol} (Native: {native_symbol}). "
+                    f"Assuming FLAT state. Triggering Recovery Fallback to LONG (side=buy)."
                 )
                 current_price_fb = 0.0
                 try:
                     ticker = await exchange_manager.get_ticker(symbol)
                     current_price_fb = float(ticker.get("last") or ticker.get("close") or 0.0)
-                except Exception:
-                    pass
+                    logger.info(f"[SCALER] Recovery ticker price for {symbol}: {current_price_fb}")
+                except Exception as e:
+                    logger.warning(f"[SCALER] Recovery ticker fetch failed: {e}")
                 return "buy", current_price_fb, None, 1.0
 
             position_amt = float(target_pos.get("positionAmt") or 0.0)
@@ -461,8 +462,8 @@ class ScheduledScalerBot:
         if position_amt == 0.0:
             # positionAmt is exactly 0 → flat → LONG fallback
             logger.info(
-                f"[SCALER] Flat position for {symbol} (positionAmt=0). "
-                f"Fallback to LONG (side=buy). Leverage={leverage}x."
+                f"[SCALER] Position for {symbol} is FLAT (positionAmt=0). "
+                f"Executing default cycle fallback to LONG (side=buy). Leverage={leverage}x."
             )
             return "buy", current_price, None, leverage
 
@@ -474,6 +475,10 @@ class ScheduledScalerBot:
             o for o in open_orders
             if o.get("reduceOnly") and o.get("type") == "LIMIT"
         ]
+        logger.info(
+            f"[SCALER] Syncing TPs for {native_symbol}: found {len(reduce_only_limits)} "
+            f"reduceOnly LIMIT orders out of {len(open_orders)} total open orders."
+        )
 
         nearest_tp_price: Optional[float] = None
         tp_implied_side: Optional[str] = None
@@ -505,8 +510,8 @@ class ScheduledScalerBot:
         # Agreement check
         if nearest_tp_price is None:
             logger.info(
-                f"[SCALER] No TP found for {native_symbol}/{position_side}. "
-                f"Using default_profit_pc={self.default_profit_pc}"
+                f"[SCALER] No existing TP orders detected for {native_symbol}/{position_side}. "
+                f"Defaulting to configured profit_pc={self.default_profit_pc}"
             )
             # No TP found → use default, but side is inferred from position
             return position_side, current_price, None, leverage
