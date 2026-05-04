@@ -315,13 +315,12 @@ class ScheduledScalerBot:
             )
 
             # ── Step 4: Idempotency guard ─────────────────────────
-            if self._has_active_scaler_chase(symbol, side):
-                logger.info(
-                    f"[SCALER] Active scaler Chase detected for {symbol}/{side}, "
-                    "skipping cycle."
-                )
+            active_chase = self._get_active_chase(symbol, side)
+            if active_chase:
+                msg = f"Active Chase detected (ID: {active_chase.id}, Origin: {active_chase.originator}) for {symbol}/{side}, skipping cycle."
+                logger.info(f"[SCALER] {msg}")
                 await self._log_signal(
-                    symbol, "IDEMPOTENCY", "HOLD", error="Active scaler Chase already running"
+                    symbol, "IDEMPOTENCY", "HOLD", error=msg
                 )
                 return
 
@@ -559,10 +558,10 @@ class ScheduledScalerBot:
     # Idempotency guard
     # ──────────────────────────────────────────────────────────────
 
-    def _has_active_scaler_chase(self, symbol: str, side: str) -> bool:
+    def _get_active_chase(self, symbol: str, side: str) -> Optional[BotPipelineProcess]:
         """
-        Checks DB for any CHASING BotPipelineProcess launched by SCALER_BOT
-        for the same symbol + side.
+        Checks DB for any CHASING BotPipelineProcess for the same symbol + side.
+        Returns the process object if found, else None.
         """
         from app.db.database import BotPipelineProcess, get_session_direct
         from sqlmodel import select
@@ -573,10 +572,8 @@ class ScheduledScalerBot:
                 .where(BotPipelineProcess.symbol == symbol)
                 .where(BotPipelineProcess.side == side)
                 .where(BotPipelineProcess.status == "CHASING")
-                # handler_type is always CHASE_V2 but originator distinguishes
             )
-            result = session.exec(stmt).first()
-            return result is not None
+            return session.exec(stmt).first()
 
     # ──────────────────────────────────────────────────────────────
     # Helpers
