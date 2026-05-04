@@ -35,10 +35,17 @@ from app.core.logger import logger
 
 
 class CloseFillReactor:
-    """
-    Singleton reactor that monitors Chase V2 completions (via async hook)
-    and launches a follow-up Chase after a cooldown = 50% of the closed cycle duration.
-    """
+    # ─────────────────────────────────────────────────────────────
+    # CONFIGURACIÓN DE CLASE (Encapsulación de constantes)
+    # ─────────────────────────────────────────────────────────────
+    DEFAULT_SIDE = "buy"
+    DEFAULT_PROFIT_PC = 0.005
+    COOLDOWN_MULTIPLIER = 0.5      # 50% de la duración del ciclo anterior
+    MIN_COOLDOWN_SECONDS = 30.0    # Suelo de seguridad
+    MAX_COOLDOWN_SECONDS = 3600.0  # Techo de seguridad (1 hora)
+    RETRY_DELAY_SECONDS = 30.0     # Espera tras fallo transitorio en init_chase
+    CONFIG_DB_ID = 1               # ID único para la fila de configuración en DB
+    PERCENT_MULTIPLIER = 100.0     # Conversión de decimal a porcentaje
 
     _instance: Optional["CloseFillReactor"] = None
 
@@ -53,9 +60,9 @@ class CloseFillReactor:
             return
         self.is_enabled: bool = False
         self.enabled_symbol: Optional[str] = None
-        self.side: str = "buy"                     # Configured at enable-time
+        self.side: str = self.DEFAULT_SIDE         # Configured at enable-time
         self.amount: float = 0.0                   # Configured at enable-time
-        self.profit_pc: float = 0.005              # Configured at enable-time
+        self.profit_pc: float = self.DEFAULT_PROFIT_PC  # Configured at enable-time
         self.last_cooldown_seconds: float = 0.0
         self.last_cycle_duration_seconds: float = 0.0
         self.cycles_triggered: int = 0
@@ -67,7 +74,7 @@ class CloseFillReactor:
     # Public control interface (consumed by reactor_routes.py)
     # ─────────────────────────────────────────────────────────────
 
-    def enable(self, symbol: str, side: str = "buy", amount: float = 0.0, profit_pc: float = 0.005) -> None:
+    def enable(self, symbol: str, side: str = DEFAULT_SIDE, amount: float = 0.0, profit_pc: float = DEFAULT_PROFIT_PC) -> None:
         """Activates the reactor with fixed parameters used for every follow-up cycle."""
         self.is_enabled = True
         self.enabled_symbol = symbol
@@ -77,7 +84,7 @@ class CloseFillReactor:
         self.cycles_triggered = 0
         logger.info(
             f"[REACTOR] Enabled — symbol: {symbol} | side: {side} | "
-            f"amount: {amount} | TP: {profit_pc*100:.2f}%"
+            f"amount: {amount} | TP: {profit_pc * self.PERCENT_MULTIPLIER:.2f}%"
         )
         # V5.9.46: Persist state so backend restarts don't lose configuration
         self._save_to_db()
@@ -100,7 +107,7 @@ class CloseFillReactor:
             "side": self.side,
             "amount": self.amount,
             "profit_pc": self.profit_pc,
-            "profit_pc_pct": f"{self.profit_pc * 100:.2f}%",
+            "profit_pc_pct": f"{self.profit_pc * self.PERCENT_MULTIPLIER:.2f}%",
             "last_cooldown_seconds": self.last_cooldown_seconds,
             "last_cycle_duration_seconds": self.last_cycle_duration_seconds,
             "cycles_triggered": self.cycles_triggered,
@@ -122,9 +129,9 @@ class CloseFillReactor:
         try:
             from app.db.database import ReactorConfig, get_session_direct
             with get_session_direct() as session:
-                config = session.get(ReactorConfig, 1)
+                config = session.get(ReactorConfig, self.CONFIG_DB_ID)
                 if config is None:
-                    config = ReactorConfig(id=1)
+                    config = ReactorConfig(id=self.CONFIG_DB_ID)
                     session.add(config)
                 config.is_enabled = self.is_enabled
                 config.symbol = self.enabled_symbol
@@ -149,7 +156,7 @@ class CloseFillReactor:
         try:
             from app.db.database import ReactorConfig, get_session_direct
             with get_session_direct() as session:
-                config = session.get(ReactorConfig, 1)
+                config = session.get(ReactorConfig, self.CONFIG_DB_ID)
                 if config is None:
                     logger.info("[REACTOR] No persisted config found — starting fresh.")
                     return False
@@ -164,7 +171,7 @@ class CloseFillReactor:
                     logger.info(
                         f"[REACTOR] State restored from DB — symbol={config.symbol} | "
                         f"side={config.side} | amount={config.amount} | "
-                        f"TP={config.profit_pc*100:.2f}%"
+                        f"TP={config.profit_pc * self.PERCENT_MULTIPLIER:.2f}%"
                     )
                     return True
                 else:
@@ -235,8 +242,8 @@ class CloseFillReactor:
         duration_seconds = max((now - start).total_seconds(), 0.0)
 
         self.last_cycle_duration_seconds = duration_seconds
-        cooldown = max(duration_seconds * 0.5, 30.0)  # floor: 30s
-        cooldown = min(cooldown, 3600.0)               # cap: 1h
+        cooldown = max(duration_seconds * self.COOLDOWN_MULTIPLIER, self.MIN_COOLDOWN_SECONDS)
+        cooldown = min(cooldown, self.MAX_COOLDOWN_SECONDS)
 
         logger.info(
             f"[REACTOR] Cycle duration: {duration_seconds:.1f}s → "
@@ -261,7 +268,7 @@ class CloseFillReactor:
 
             logger.info(
                 f"[REACTOR] Follow-up Chase scheduled in {cooldown:.1f}s — "
-                f"{symbol} {side} {amount} @ {profit_pc*100:.2f}%"
+                f"{symbol} {side} {amount} @ {profit_pc * self.PERCENT_MULTIPLIER:.2f}%"
             )
 
             await asyncio.sleep(cooldown)
@@ -293,9 +300,9 @@ class CloseFillReactor:
                 err = result.get('error', 'Unknown error')
                 logger.warning(
                     f"[REACTOR] ❌ Follow-up Chase failed: {err}. "
-                    f"Retrying in 30s..."
+                    f"Retrying in {self.RETRY_DELAY_SECONDS}s..."
                 )
-                await asyncio.sleep(30)
+                await asyncio.sleep(self.RETRY_DELAY_SECONDS)
                 if not self.is_enabled:
                     logger.info("[REACTOR] Reactor disabled during retry wait. Aborting.")
                     return

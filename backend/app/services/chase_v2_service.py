@@ -14,9 +14,24 @@ class ChaseV2Service:
     Autonomous Backend-Only Service for Chase V2.
     Handles 'Set & Forget' Post-Only execution without relying on browser UI.
     """
-    
+    # ─────────────────────────────────────────────────────────────
+    # CONFIGURACIÓN DE CLASE (Encapsulación de constantes)
+    # ─────────────────────────────────────────────────────────────
     COOLDOWN_SECONDS = 5
-    PRICE_DIFF_THRESHOLD = 0.0005 # 0.05%
+    PRICE_DIFF_THRESHOLD = 0.0005      # 0.05%
+    DEFAULT_PROFIT_PC = 0.005         # 0.5%
+    PRICE_SYNC_MAX_RETRIES = 15
+    PRICE_SYNC_RETRY_DELAY = 0.2
+    MAKER_PLACEMENT_MAX_ATTEMPTS = 20
+    MAKER_PLACEMENT_RETRY_DELAY = 0.3
+    BINANCE_RECV_WINDOW = 10000
+    BACKOFF_INITIAL_SECONDS = 0.2
+    BACKOFF_MULTIPLIER = 1.5
+    BACKOFF_MAX_SECONDS = 2.0
+    TIMESTAMP_MS_MULTIPLIER = 1000
+    CLIENT_ORDER_ID_PREFIX = "V2_"
+    RANDOM_HEX_LENGTH = 3
+    DEFAULT_PIPELINE_ID = 0
 
     _instance = None
 
@@ -49,7 +64,7 @@ class ChaseV2Service:
             
         return True
 
-    async def init_chase(self, symbol: str, side: str, amount: float, profit_pc: float = 0.005, pipeline_id: int = 0, originator: str = "MANUAL") -> Dict[str, Any]:
+    async def init_chase(self, symbol: str, side: str, amount: float, profit_pc: float = DEFAULT_PROFIT_PC, pipeline_id: int = DEFAULT_PIPELINE_ID, originator: str = "MANUAL") -> Dict[str, Any]:
         try:
             # V5.9.38: Proactive normalization to ensure registry match (DIAS Robustness)
             symbol = await exchange_manager.normalize_symbol(symbol)
@@ -58,12 +73,12 @@ class ChaseV2Service:
             await stream_manager.subscribe(symbol)
             
             price = None
-            for _ in range(15):
+            for _ in range(self.PRICE_SYNC_MAX_RETRIES):
                 ticker = exchange_manager.get_ticker(symbol)
                 if ticker:
                     price = ticker.get('ask' if side == 'buy' else 'bid')
                     if price: break
-                await asyncio.sleep(0.2)
+                await asyncio.sleep(self.PRICE_SYNC_RETRY_DELAY)
             
             if not price:
                 logger.warning(f"[CHASE V2 SERVICE] Stream price missing for {symbol}, falling back to REST")
@@ -81,7 +96,7 @@ class ChaseV2Service:
             # Fetch tick_size once — needed for maker-safe price adjustment
             tick_size = await exchange_manager.get_tick_size(symbol)
 
-            for attempt in range(20):
+            for attempt in range(self.MAKER_PLACEMENT_MAX_ATTEMPTS):
                 # Always fetch the freshest book price on each attempt
                 ticker = exchange_manager.get_ticker(symbol)
                 if ticker:
@@ -101,7 +116,7 @@ class ChaseV2Service:
                         price = raw_price
 
                 if not price:
-                    await asyncio.sleep(0.3)
+                    await asyncio.sleep(self.MAKER_PLACEMENT_RETRY_DELAY)
                     continue
 
                 qty = amount / price
@@ -114,9 +129,9 @@ class ChaseV2Service:
 
                 import secrets
                 native_params = {
-                    "recvWindow": 10000,
+                    "recvWindow": self.BINANCE_RECV_WINDOW,
                     "timeInForce": "GTX",
-                    "newClientOrderId": f"V2_{int(datetime.utcnow().timestamp() * 1000)}_{secrets.token_hex(3)}"
+                    "newClientOrderId": f"{self.CLIENT_ORDER_ID_PREFIX}{int(datetime.utcnow().timestamp() * self.TIMESTAMP_MS_MULTIPLIER)}_{secrets.token_hex(self.RANDOM_HEX_LENGTH)}"
                 }
 
                 print(f"[DEBUG] Calling binance_native.create_order for {market_id}...")
@@ -136,8 +151,8 @@ class ChaseV2Service:
 
                 error = str(res.get("error", ""))
                 if "-5022" in error:
-                    # Exponential backoff capped at 2s — gives the book time to shift
-                    backoff = min(0.2 * (1.5 ** attempt), 2.0)
+                    # Exponential backoff capped at max — gives the book time to shift
+                    backoff = min(self.BACKOFF_INITIAL_SECONDS * (self.BACKOFF_MULTIPLIER ** attempt), self.BACKOFF_MAX_SECONDS)
                     logger.info(
                         f"[CHASE V2 SERVICE] Post-Only rejection #{attempt+1}. "
                         f"Retrying in {backoff:.2f}s with fresh price..."
@@ -148,7 +163,7 @@ class ChaseV2Service:
                     return {"success": False, "error": f"Execution failed: {error}"}
             
             if not entry_order:
-                return {"success": False, "error": "Failed to place Maker order after 20 attempts."}
+                return {"success": False, "error": f"Failed to place Maker order after {self.MAKER_PLACEMENT_MAX_ATTEMPTS} attempts."}
             
             order_id = str(entry_order.get("orderId"))
 
@@ -215,7 +230,7 @@ class ChaseV2Service:
             if process.sub_status == "RECOVERING" or process.entry_order_id == "INITIAL_REJECTED":
                 native_params = {
                     "timeInForce": "GTX",
-                    "newClientOrderId": f"V2_ENTRY_{int(datetime.utcnow().timestamp())}"
+                    "newClientOrderId": f"{self.CLIENT_ORDER_ID_PREFIX}ENTRY_{int(datetime.utcnow().timestamp())}"
                 }
                 res = await binance_native.create_order(
                     symbol=market_id,
@@ -280,7 +295,7 @@ class ChaseV2Service:
                 process.amount = executed_qty
                 session.commit()
 
-            final_profit_pc = process.custom_profit_pc or 0.005
+            final_profit_pc = process.custom_profit_pc or self.DEFAULT_PROFIT_PC
             symbol = process.symbol
             side = "sell" if process.side == "buy" else "buy"
             entry_price = process.last_order_price or 0.0
