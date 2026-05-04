@@ -50,7 +50,7 @@ Rastreador de operaciones para Binance Futures con soporte para emparejamiento F
 - `backend/app/services/unified_counter_order_service.py`: Motor estratégico bi-direccional (UCOE V5.9) que genera contrapartidas (Long/Short) basadas en el historial de Binance, integrando visibilidad de **Algo Orders (TP/SL/Trailing)** y gestionando automáticamente el flag `reduceOnly` utilizando unidades estándar de contratos (Factor 1).
 - `backend/app/api/routes.py`: Incorpora los endpoints descriptivos `/api/unified-counter-order-engine/*` para la orquestación del UCOE.
 - `scripts/impact_analyzer.py`: Herramienta de seguridad implementada en 2026-04-16. Escanea el proyecto, construye grafos de dependencia y mapea impactos entre backend y frontend para asegurar cambios libres de errores.
-- `backend/app/services/scheduled_scaler_bot.py`: Orquestador de escalado (Bot C). Implementa lógica de validación de margen consciente del apalancamiento (leverage-aware) y ejecución dinámica de Chase V2 (Adaptive OTO Scaling).
+- `backend/app/services/scheduled_scaler_bot.py`: Orquestador de escalado (Bot C). Implementa lógica de validación de margen consciente del apalancamiento (leverage-aware) y ejecución dinámica de Chase V2 (Adaptive OTO Scaling). Incluye trazabilidad detallada de idempotencia para validación de ciclos (ID/Originator).
 
 ## AI Agent Configuration (Updated 2026-04-04)
 

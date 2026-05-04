@@ -24,7 +24,7 @@ El archivo `docs/PROJECT_MAP.md` es el "Cerebro Colectivo" del proyecto y debe p
 
 ## 📁 4. Registro de Incidentes (docs/incidents/)
 1. **Centralización**: No generar archivos de procedimiento dispersos en la raíz.
-2. **Consolidación**: Al completar una solución, generar UN solo reporte con: Problema, Solución e Impacto.
+2. **Consolidación**: Al completar una solución, generar UN solo reporte con: Problema, Solución, Impacto y Rama recomendada.
 3. **Nomenclatura**: `YYYY-MM-DD-descripcion-breve.md`.
 4. **Lenguaje**: Usar verbos de propiedad (Diseñé, Implementé, Corregí).
 

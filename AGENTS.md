@@ -202,7 +202,7 @@ Every new feature or fix must meet:
 Once the solution is validated and temporaries are closed, generate a report in `docs/incidents/`:
 
 - **Naming:** `YYYY-MM-DD-short-description.md`
-- **Structure:** Problem, Solution (including mention of tests), Impact.
+- **Structure:** Problem, Solution (including mention of tests), Impact, Rama recomendada (Git branch suggestion).
 - **Language:** Use ownership verbs (Led, Designed, Implemented, Launched).
 - **Technical Registry (Command Feed):** Update the KI `technical-command-registry` with successful terminal commands and environmental gotchas to prevent repetitive execution errors.
 
