@@ -23,11 +23,6 @@ from typing import Optional
 
 logger = logging.getLogger("apibinance2026")
 
-# ──────────────────────────────────────────────────────────────────
-# Constants
-# ──────────────────────────────────────────────────────────────────
-_PROFIT_FLOOR = 0.002          # min profit_pc (covers fees × 2 + slippage)
-_BALANCE_SAFETY_MULTIPLIER = 1.1   # require 10% extra margin headroom
 
 
 class ScheduledScalerBot:
@@ -35,6 +30,20 @@ class ScheduledScalerBot:
     Singleton that manages the periodic scaling execution loop.
     Persists state in the 'scaler_bot_config' DB table.
     """
+
+    # ─────────────────────────────────────────────────────────────
+    # CONFIGURACIÓN DE CLASE (Encapsulación de constantes)
+    # ─────────────────────────────────────────────────────────────
+    PROFIT_FLOOR = 0.002
+    BALANCE_SAFETY_MULTIPLIER = 1.1
+    DEFAULT_PROFIT_PC = 0.005
+    DEFAULT_INTERVAL_HOURS = 8.0
+    SHUTDOWN_CHECK_INTERVAL_SECONDS = 60
+    DEFAULT_LEVERAGE = 1.0
+    SECONDS_PER_HOUR = 3600
+    MIDPOINT_DIVISOR = 2.0
+    LEVERAGE_THRESHOLD = 1.0
+    PERCENT_MULTIPLIER = 100.0
 
     _instance: Optional["ScheduledScalerBot"] = None
 
@@ -54,8 +63,8 @@ class ScheduledScalerBot:
 
         # Live state (mirrors DB row while enabled)
         self.symbol: Optional[str] = None
-        self.default_profit_pc: float = 0.005
-        self.interval_hours: float = 8.0
+        self.default_profit_pc: float = self.DEFAULT_PROFIT_PC
+        self.interval_hours: float = self.DEFAULT_INTERVAL_HOURS
         self.is_enabled: bool = False
 
         # Asyncio loop task
@@ -69,8 +78,8 @@ class ScheduledScalerBot:
     async def enable(
         self,
         symbol: str,
-        default_profit_pc: float = 0.005,
-        interval_hours: float = 8.0,
+        default_profit_pc: float = DEFAULT_PROFIT_PC,
+        interval_hours: float = DEFAULT_INTERVAL_HOURS,
     ) -> dict:
         """
         Enables the scaler for a given symbol.
@@ -78,7 +87,7 @@ class ScheduledScalerBot:
         """
         async with self._lock:
             self.symbol = symbol
-            self.default_profit_pc = max(default_profit_pc, _PROFIT_FLOOR)
+            self.default_profit_pc = max(default_profit_pc, self.PROFIT_FLOOR)
             self.interval_hours = interval_hours
             self.is_enabled = True
 
@@ -189,11 +198,11 @@ class ScheduledScalerBot:
 
         while self.is_enabled:
             # Sleep in 60s chunks so disable() takes effect quickly
-            interval_seconds = int(self.interval_hours * 3600)
+            interval_seconds = int(self.interval_hours * self.SECONDS_PER_HOUR)
             elapsed = 0
             while elapsed < interval_seconds and self.is_enabled:
-                await asyncio.sleep(60)
-                elapsed += 60
+                await asyncio.sleep(self.SHUTDOWN_CHECK_INTERVAL_SECONDS)
+                elapsed += self.SHUTDOWN_CHECK_INTERVAL_SECONDS
 
             if not self.is_enabled:
                 break
@@ -287,7 +296,7 @@ class ScheduledScalerBot:
             available = await binance_native.get_available_balance(quote_asset)
             min_qty = await exchange_manager.get_safe_min_notional_qty(symbol, current_price)
             
-            notional_required = min_qty * current_price * _BALANCE_SAFETY_MULTIPLIER
+            notional_required = min_qty * current_price * self.BALANCE_SAFETY_MULTIPLIER
             min_cost = notional_required / leverage
             
             logger.info(
@@ -405,19 +414,19 @@ class ScheduledScalerBot:
             
             # Robust leverage extraction for CCXT source
             leverage = float(target_pos.get("leverage") or 0.0)
-            if leverage <= 1.0:
+            if leverage <= self.LEVERAGE_THRESHOLD:
                 # Check info sub-object for native Binance fields
                 info = target_pos.get("info", {})
                 leverage = float(info.get("leverage") or 0.0)
                 
-                if leverage <= 1.0:
+                if leverage <= self.LEVERAGE_THRESHOLD:
                     # Fallback to math
                     notional = abs(float(target_pos.get("notional") or info.get("notional") or 0.0))
                     initial_margin = float(target_pos.get("initialMargin") or info.get("initialMargin") or 0.0)
                     if initial_margin > 0:
                         leverage = round(notional / initial_margin)
                     else:
-                        leverage = 1.0
+                        leverage = self.DEFAULT_LEVERAGE
             
             logger.info(f"[SCALER] Leverage from controlador (CCXT) for {ccxt_symbol}: {leverage}x")
         else:
@@ -442,20 +451,20 @@ class ScheduledScalerBot:
                     logger.info(f"[SCALER] Recovery ticker price for {symbol}: {current_price_fb}")
                 except Exception as e:
                     logger.warning(f"[SCALER] Recovery ticker fetch failed: {e}")
-                return "buy", current_price_fb, None, 1.0
+                return "buy", current_price_fb, None, self.DEFAULT_LEVERAGE
 
             position_amt = float(target_pos.get("positionAmt") or 0.0)
             current_price = float(target_pos.get("markPrice") or 0.0)
 
             # Robust leverage extraction for Native source
             leverage = float(target_pos.get("leverage") or 0.0)
-            if leverage <= 1.0:
+            if leverage <= self.LEVERAGE_THRESHOLD:
                 notional = abs(float(target_pos.get("notional") or 0.0))
                 initial_margin = float(target_pos.get("initialMargin") or 0.0)
                 if initial_margin > 0:
                     leverage = round(notional / initial_margin)
                 else:
-                    leverage = 1.0
+                    leverage = self.DEFAULT_LEVERAGE
             logger.info(f"[SCALER] Leverage from native engine for {native_symbol}: {leverage}x")
 
         if position_amt == 0.0:
@@ -550,9 +559,9 @@ class ScheduledScalerBot:
             return self.default_profit_pc
 
         gap = abs(nearest_tp_price - current_price)
-        profit_pc = gap / (2.0 * current_price)
+        profit_pc = gap / (self.MIDPOINT_DIVISOR * current_price)
 
-        return max(profit_pc, _PROFIT_FLOOR)
+        return max(profit_pc, self.PROFIT_FLOOR)
 
     # ──────────────────────────────────────────────────────────────
     # Idempotency guard
