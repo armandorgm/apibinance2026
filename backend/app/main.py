@@ -81,6 +81,12 @@ async def startup_event():
     if restored:
         logger.info("[STARTUP] ScheduledScalerBot state restored from DB.")
 
+    # V5.9.46: Restore CloseFillReactor (Bot B) state from DB
+    from app.services.close_fill_reactor import close_fill_reactor
+    reactor_restored = await close_fill_reactor.load_from_db()
+    if reactor_restored:
+        logger.info("[STARTUP] CloseFillReactor (Bot B) state restored from DB — reactor is armed.")
+
 
 @app.on_event("shutdown")
 async def shutdown_event():

@@ -410,6 +410,20 @@ class AdaptiveOTOScalingAction(BaseAction):
                     session.commit()
                     return
 
+            # V5.9.49: Position validation barrier (Anti-2022 Guard)
+            if not await exchange_manager.has_open_position(process.symbol):
+                logger.warning(f"[CHASE] Aborting TP placement for {process.symbol}: No open position found on exchange. Marking as ORPHAN.")
+                process.status = "ABORTED"
+                process.sub_status = "ORPHAN_NO_POSITION"
+                process.finished_at = datetime.utcnow()
+                session.add(process)
+                session.commit()
+                
+                # Cleanup
+                from app.core.stream_service import stream_manager
+                await stream_manager.unsubscribe(process.symbol)
+                return
+
             # Apply Precision
             qty_str = await exchange_manager.amount_to_precision(process.symbol, float(filled_qty))
             price_str = await exchange_manager.price_to_precision(process.symbol, float(tp_price))
@@ -458,8 +472,12 @@ class AdaptiveOTOScalingAction(BaseAction):
             
             # Reactor Bot B Hook
             from app.services.close_fill_reactor import close_fill_reactor
-            import asyncio
-            asyncio.create_task(close_fill_reactor.on_position_closed(process))
+            # V5.9.44: Extract primitives BEFORE session closes to avoid DetachedInstanceError
+            _closed_symbol = process.symbol
+            _closed_at = process.created_at
+            asyncio.create_task(close_fill_reactor.on_position_closed(
+                symbol=_closed_symbol, created_at=_closed_at
+            ))
             
             logger.info(f"[CHASE] Completed OTO loop for {symbol}. TP at {price_str}, order ID: {tp_order.get('id')}")
 

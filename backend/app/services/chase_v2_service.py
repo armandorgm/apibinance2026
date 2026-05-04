@@ -262,6 +262,20 @@ class ChaseV2Service:
 
     async def handle_fill(self, process: BotPipelineProcess, session, executed_qty: float = None):
         try:
+            # V5.9.47: Idempotency guard — prevent duplicate TP placement when Hard-Sync
+            # and WebSocket stream both trigger handle_fill for the same fill event.
+            # Refresh from DB to get the authoritative state before acting.
+            try:
+                session.refresh(process)
+            except Exception:
+                pass
+            if process.status == "COMPLETED":
+                logger.info(
+                    f"[CHASE V2 SERVICE] handle_fill skipped: process {process.id} "
+                    f"already COMPLETED (TP was already placed). Ignoring duplicate call."
+                )
+                return
+
             if executed_qty is not None and executed_qty > 0:
                 process.amount = executed_qty
                 session.commit()
@@ -285,6 +299,9 @@ class ChaseV2Service:
                 "newClientOrderId": f"V2_TP_{int(datetime.utcnow().timestamp())}"
             }
             
+            # V5.9.49: Position validation barrier REMOVED (Low-Latency Reactive Pattern)
+            # We now place the TP directly and only check position if rejected with -2022.
+
             res = await binance_native.create_order(
                 symbol=market_id,
                 side=side,
@@ -303,14 +320,35 @@ class ChaseV2Service:
                 
                 from app.services.bot_service import bot_instance
                 bot_instance.engine.unregister_chase(symbol)
-                stream_manager.unsubscribe(symbol)
+                await stream_manager.unsubscribe(symbol)
 
                 # ── Bot B hook: emit to CloseFillReactor (non-blocking) ──
+                # V5.9.44: Extract primitives BEFORE session closes to avoid DetachedInstanceError
                 from app.services.close_fill_reactor import close_fill_reactor
-                asyncio.create_task(close_fill_reactor.on_position_closed(process))
+                _closed_symbol = process.symbol
+                _closed_at = process.created_at
+                asyncio.create_task(close_fill_reactor.on_position_closed(
+                    symbol=_closed_symbol, created_at=_closed_at
+                ))
             else:
                 error = res.get("error", "Unknown error")
                 logger.error(f"[CHASE V2 SERVICE] TP placement failed: {error}")
+                
+                # V5.9.50: Reactive Position Guard (Try-Before-Check)
+                if "-2022" in error or "reduceonly" in error.lower():
+                    if not await exchange_manager.has_open_position(symbol):
+                        logger.warning(f"[CHASE V2 SERVICE] TP rejected (-2022) and NO position found for {symbol}. Marking as ORPHAN.")
+                        process.status = "ABORTED"
+                        process.sub_status = "ORPHAN_NO_POSITION"
+                        session.commit()
+                        
+                        from app.services.bot_service import bot_instance
+                        bot_instance.engine.unregister_chase(symbol)
+                        await stream_manager.unsubscribe(symbol)
+                        return
+                    else:
+                        logger.error(f"[CHASE V2 SERVICE] TP rejected (-2022) but position EXISTS for {symbol}. Manual intervention may be required.")
+
                 if "Duplicate" in error or "-2012" in error:
                     process.status = "COMPLETED"
                     session.commit()
@@ -331,7 +369,7 @@ class ChaseV2Service:
             
             from app.services.bot_service import bot_instance
             bot_instance.engine.unregister_chase(process.symbol)
-            stream_manager.unsubscribe(process.symbol)
+            await stream_manager.unsubscribe(process.symbol)
 
     async def stop_chase(self, process_id: int) -> bool:
         with get_session_direct() as session:
@@ -353,7 +391,7 @@ class ChaseV2Service:
                 session.commit()
                 from app.services.bot_service import bot_instance
                 bot_instance.engine.unregister_chase(process.symbol)
-                stream_manager.unsubscribe(process.symbol)
+                await stream_manager.unsubscribe(process.symbol)
                 return True
             return False
 

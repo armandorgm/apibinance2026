@@ -10,9 +10,19 @@ SOLID compliance:
   - O: New behaviors (e.g. different cooldown strategies) extend, not modify.
   - D: Lazy imports break circular dependency with ChaseV2Service.
 
+V5.9.48 — Reactor Resilience & Persistence:
+  - Fixed symbol mismatch using Market ID comparison (e.g. 1000PEPE/USDC:USDC vs 1000PEPE/USDC).
+  - Eliminated auto-disable on transient Bot A failure (rollback removed in reactor_routes).
+  - _delayed_chase now retries once (after 30s) if init_chase fails transiently.
+  - Added save_to_db() / load_from_db() for state persistence across backend restarts.
+  - V5.9.45: Symbol normalization via exchange_manager in on_position_closed.
+  - V5.9.44: DetachedInstanceError fix using plain primitive arguments.
+
 Flow:
   ChaseV2Service.handle_fill()
-    └─> asyncio.create_task(reactor.on_position_closed(process))
+    └─> asyncio.create_task(
+            reactor.on_position_closed(symbol=process.symbol,
+                                        created_at=process.created_at))
           └─> asyncio.sleep(cooldown)
                 └─> chase_v2_service.init_chase(...)
 """
@@ -22,7 +32,6 @@ from datetime import datetime
 from typing import Optional
 
 from app.core.logger import logger
-from app.db.database import BotPipelineProcess
 
 
 class CloseFillReactor:
@@ -70,6 +79,8 @@ class CloseFillReactor:
             f"[REACTOR] Enabled — symbol: {symbol} | side: {side} | "
             f"amount: {amount} | TP: {profit_pc*100:.2f}%"
         )
+        # V5.9.46: Persist state so backend restarts don't lose configuration
+        self._save_to_db()
 
     def disable(self) -> None:
         """Deactivates the reactor and cancels any pending follow-up task."""
@@ -78,6 +89,8 @@ class CloseFillReactor:
             self._pending_task.cancel()
             logger.info("[REACTOR] Pending follow-up task cancelled.")
         logger.info("[REACTOR] Disabled.")
+        # V5.9.46: Persist disabled state to DB
+        self._save_to_db()
 
     def get_status(self) -> dict:
         """Returns the current observable state of the reactor."""
@@ -97,23 +110,104 @@ class CloseFillReactor:
         }
 
     # ─────────────────────────────────────────────────────────────
+    # Persistence interface (V5.9.46)
+    # ─────────────────────────────────────────────────────────────
+
+    def _save_to_db(self) -> None:
+        """
+        Persists current reactor state to the DB (upsert on id=1).
+        Called automatically by enable() and disable().
+        Fire-and-forget — errors are logged, never raised.
+        """
+        try:
+            from app.db.database import ReactorConfig, get_session_direct
+            with get_session_direct() as session:
+                config = session.get(ReactorConfig, 1)
+                if config is None:
+                    config = ReactorConfig(id=1)
+                    session.add(config)
+                config.is_enabled = self.is_enabled
+                config.symbol = self.enabled_symbol
+                config.side = self.side
+                config.amount = self.amount
+                config.profit_pc = self.profit_pc
+                from datetime import datetime as _dt
+                config.updated_at = _dt.utcnow()
+                session.commit()
+                logger.debug(
+                    f"[REACTOR] State persisted to DB — enabled={self.is_enabled}, "
+                    f"symbol={self.enabled_symbol}"
+                )
+        except Exception as e:
+            logger.error(f"[REACTOR] Failed to persist state to DB: {e}", exc_info=True)
+
+    async def load_from_db(self) -> bool:
+        """
+        Restores reactor state from DB on backend startup.
+        Returns True if a previously-enabled config was found and restored.
+        """
+        try:
+            from app.db.database import ReactorConfig, get_session_direct
+            with get_session_direct() as session:
+                config = session.get(ReactorConfig, 1)
+                if config is None:
+                    logger.info("[REACTOR] No persisted config found — starting fresh.")
+                    return False
+
+                self.enabled_symbol = config.symbol
+                self.side = config.side
+                self.amount = config.amount
+                self.profit_pc = config.profit_pc
+                self.is_enabled = config.is_enabled
+
+                if self.is_enabled:
+                    logger.info(
+                        f"[REACTOR] State restored from DB — symbol={config.symbol} | "
+                        f"side={config.side} | amount={config.amount} | "
+                        f"TP={config.profit_pc*100:.2f}%"
+                    )
+                    return True
+                else:
+                    logger.info("[REACTOR] Persisted config found but reactor was disabled. No auto-start.")
+                    return False
+        except Exception as e:
+            logger.error(f"[REACTOR] Failed to load state from DB: {e}", exc_info=True)
+            return False
+
+    # ─────────────────────────────────────────────────────────────
     # Event hook — called by ChaseV2Service.handle_fill()
     # ─────────────────────────────────────────────────────────────
 
-    async def on_position_closed(self, process: BotPipelineProcess) -> None:
+    async def on_position_closed(self, symbol: str, created_at: Optional[datetime] = None) -> None:
         """
         Async hook invoked when a Chase V2 cycle completes (TP placed successfully).
-        Guards: reactor must be enabled and process symbol must match.
+
+        V5.9.45 — Symbol Normalization:
+        Uses exchange_manager.normalize_symbol to ensure consistent comparison
+        (e.g. matching 1000PEPE/USDC:USDC from CCXT with 1000PEPE/USDC from config).
+
+        Args:
+            symbol:     CCXT-normalised symbol of the closed process.
+            created_at: UTC datetime when the process was created (for cooldown calc).
         """
-        if not self.is_enabled:
+        if not self.is_enabled or not self.enabled_symbol:
             return
 
-        if process.symbol != self.enabled_symbol:
+        # V5.9.48: Use Market ID for comparison to avoid CCXT formatting mismatches
+        # (e.g. matching 1000PEPE/USDC:USDC with 1000PEPE/USDC)
+        from app.core.exchange import exchange_manager
+        id_closed = await exchange_manager.get_market_id(symbol)
+        id_enabled = await exchange_manager.get_market_id(self.enabled_symbol)
+
+        if id_closed != id_enabled:
             logger.debug(
-                f"[REACTOR] Skipping — closed symbol {process.symbol} "
-                f"does not match enabled symbol {self.enabled_symbol}."
+                f"[REACTOR] Skipping — closed ID {id_closed} "
+                f"does not match enabled ID {id_enabled}."
             )
             return
+
+        # Ensure we use a normalized CCXT symbol for the follow-up chase
+        norm_closed = await exchange_manager.normalize_symbol(symbol)
 
         # Cancel any previous pending task to avoid stacking
         if self._pending_task and not self._pending_task.done():
@@ -121,21 +215,23 @@ class CloseFillReactor:
             logger.warning("[REACTOR] Previous pending task cancelled (new cycle started).")
 
         self._pending_task = asyncio.create_task(
-            self._delayed_chase(process)
+            self._delayed_chase(symbol=norm_closed, created_at=created_at)
         )
 
     # ─────────────────────────────────────────────────────────────
     # Internal logic
     # ─────────────────────────────────────────────────────────────
 
-    def _calculate_cooldown(self, process: BotPipelineProcess) -> float:
+    def _calculate_cooldown(self, created_at: Optional[datetime]) -> float:
         """
         Calculates cooldown = 50% of the closed cycle duration.
-        Uses process.created_at as cycle start and utcnow() as cycle end.
+        Uses created_at as cycle start and utcnow() as cycle end.
         Minimum floor: 30 seconds. Maximum cap: 3600 seconds (1 hour).
+
+        V5.9.44: Accepts plain datetime primitive instead of ORM object.
         """
         now = datetime.utcnow()
-        start = process.created_at or now
+        start = created_at or now
         duration_seconds = max((now - start).total_seconds(), 0.0)
 
         self.last_cycle_duration_seconds = duration_seconds
@@ -148,16 +244,17 @@ class CloseFillReactor:
         )
         return cooldown
 
-    async def _delayed_chase(self, process: BotPipelineProcess) -> None:
+    async def _delayed_chase(self, symbol: str, created_at: Optional[datetime] = None) -> None:
         """
         Waits for the calculated cooldown, then fires a new Chase V2
         with the same parameters as the completed process.
+
+        V5.9.44: Accepts plain primitives instead of ORM object.
         """
         try:
-            cooldown = self._calculate_cooldown(process)
+            cooldown = self._calculate_cooldown(created_at)
             self.last_cooldown_seconds = cooldown
 
-            symbol = process.symbol
             side = self.side          # Always use the value configured at enable-time
             amount = self.amount      # Always use the value configured at enable-time
             profit_pc = self.profit_pc
@@ -190,9 +287,35 @@ class CloseFillReactor:
                     f"[REACTOR] ✅ Follow-up Chase #{self.cycles_triggered} launched successfully."
                 )
             else:
-                logger.error(
-                    f"[REACTOR] ❌ Follow-up Chase failed: {result.get('error', 'Unknown error')}"
+                # V5.9.46 — Retry once after 30s before giving up.
+                # Transient failures (price not available, -5022 exhausted) should not
+                # silently kill the follow-up loop.
+                err = result.get('error', 'Unknown error')
+                logger.warning(
+                    f"[REACTOR] ❌ Follow-up Chase failed: {err}. "
+                    f"Retrying in 30s..."
                 )
+                await asyncio.sleep(30)
+                if not self.is_enabled:
+                    logger.info("[REACTOR] Reactor disabled during retry wait. Aborting.")
+                    return
+                retry_result = await chase_v2_service.init_chase(
+                    symbol=symbol,
+                    side=side,
+                    amount=amount,
+                    profit_pc=profit_pc,
+                )
+                if retry_result.get("success"):
+                    self.cycles_triggered += 1
+                    logger.info(
+                        f"[REACTOR] ✅ Follow-up Chase #{self.cycles_triggered} launched on retry."
+                    )
+                else:
+                    logger.error(
+                        f"[REACTOR] ❌ Follow-up Chase failed after retry: "
+                        f"{retry_result.get('error', 'Unknown error')}. "
+                        f"Reactor remains enabled — waiting for next fill event."
+                    )
 
         except asyncio.CancelledError:
             logger.info("[REACTOR] Delayed chase task was cancelled.")

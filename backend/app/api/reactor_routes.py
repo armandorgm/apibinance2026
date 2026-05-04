@@ -64,12 +64,22 @@ async def enable_reactor(req: ReactorEnableRequest):
         )
 
         if not chase_result.get("success"):
-            # Rollback: disable reactor if Bot A failed to start
-            close_fill_reactor.disable()
-            raise HTTPException(
-                status_code=400,
-                detail=f"Bot B enabled but Bot A failed to start: {chase_result.get('error')}",
+            # V5.9.46 — Do NOT disable reactor on transient Bot A failure.
+            # The reactor remains armed; it will fire again on the next fill event.
+            # The caller is notified but no rollback occurs — only the user can disable.
+            logger.warning(
+                f"[API/REACTOR] Bot B enabled but initial Bot A failed: "
+                f"{chase_result.get('error')}. Reactor remains active."
             )
+            return {
+                "success": True,
+                "message": (
+                    f"Bot B enabled for {normalized_symbol} | TP={req.profit_pc*100:.2f}% "
+                    f"— initial Chase failed ({chase_result.get('error')}), reactor armed."
+                ),
+                "chase": chase_result,
+                "reactor": close_fill_reactor.get_status(),
+            }
 
         return {
             "success": True,

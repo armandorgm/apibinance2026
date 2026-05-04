@@ -152,11 +152,12 @@ class ExchangeManager:
         # 3. HEURISTIC FALLBACK (DIAS Robustness)
         # If market load failed or no match found, try common Binance patterns
         s_up = symbol.upper()
-        if s_up.endswith('USDC') and '/' not in s_up:
-            return f"{s_up[:-4]}/USDC:USDC"
-        if s_up.endswith('USDT') and '/' not in s_up:
-            # Special case for 1000PEPE and other common prefix-based symbols
-            return f"{s_up[:-4]}/USDT:USDT"
+        if s_up.endswith('USDC'):
+            base = s_up[:-4].replace('/', '')
+            return f"{base}/USDC:USDC"
+        if s_up.endswith('USDT'):
+            base = s_up[:-4].replace('/', '')
+            return f"{base}/USDT:USDT"
             
         return symbol
 
@@ -225,6 +226,14 @@ class ExchangeManager:
         except Exception as e:
             logger.error(f"[EXCHANGE] Error fetching positions: {e}")
             return []
+
+    async def has_open_position(self, symbol: str) -> bool:
+        """
+        Unified check to verify if a symbol has an active position on Binance.
+        Essential for Anti-2022 Position Guard.
+        """
+        positions = await self.get_open_positions(symbol)
+        return len(positions) > 0
 
     async def get_position_cycle_start(self, symbol: str) -> Optional[int]:
         norm_sym = await self.normalize_symbol(symbol)
